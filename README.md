@@ -128,14 +128,12 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `skipIfCrafting` | `true` | AE CPU 작업에 같은 품목이 있으면 새 요청 안 함 |
 | `cpuSkipScope` | `any` | `any`=최종산출물·보관·대기·제작중 어디에든 있으면 스킵(사람 요청 포함) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
-| `requestTimeout` | `60` | 요청 후 이 초 안에 **결과물이 안 나오면** 중단(+CPU 취소 시도). `0`=끔 |
 | `stallCycles` | `2` | **요청 루프 N회 동안 CPU 제작중 수치가 그대로면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔 |
 | `stallMinProgress` | `1` | (폴백) CPU 수치를 못 읽을 때 보관량 기준 진행 인정 최소 증가량 |
 | `cancelOnStall` | `true` | 정지 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
 | `cancelFallback` | `single` | 취소 대상을 못 찾았을 때: `single`=사용 중 CPU 가 1대뿐이면 취소 / `none`=취소 안 함 |
 | `stallCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
 | `skipIfAnyCpuBusy` | `false` | `true`=사용 중인 CPU 가 하나라도 있으면 모든 요청 보류(중복 방지 극대화) |
-| `timeoutCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면: `detail`=유지기별 상세(슬롯 5줄) / `summary`=한 줄 요약 |
 | `detailPerPage` | `2` | **상세 화면 한 페이지에 보여줄 유지기 수** (2 → 2대씩) |
@@ -165,7 +163,8 @@ lua5.3 tests/oc_mock_test.lua diag               # 진단 출력
 lua5.3 tests/oc_mock_test.lua list               # 전체 유지기 상세
 MAINTAINER_COUNT=3 lua5.3 tests/oc_mock_test.lua drive 10      # 다중 유지기(3대)
 CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
-CFG_EXTRA=$'requestTimeout=3' MAX_SLEEPS=8 lua5.3 tests/oc_mock_test.lua drive   # 타임아웃+CPU 취소
+CPU_CRAFT_COUNT=52 CFG_EXTRA=$'interval=3\nstallCycles=2' lua5.3 tests/oc_mock_test.lua drive   # 제작중 수치 고정 → 정지 감지+CPU 취소
+CPU_CRAFT_COUNT=52 CPU_CRAFT_DECREASE=1 lua5.3 tests/oc_mock_test.lua drive   # 수치가 변하면 취소 안 함
 TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크립트
 ```
 > 하네스는 실제 환경을 그대로 흉내 냅니다: ① `component`/`computer`/`term` 은 전역이 아니라 모듈,

@@ -281,7 +281,7 @@ dryRun=false
 | `cancelFallback` | `single` | 취소 대상을 못 찾았을 때 `single`=사용 중 CPU 1대면 취소 / `none`=취소 안 함 |
 | `stallCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `skipIfAnyCpuBusy` | `false` | `true`=사용 중 CPU 가 하나라도 있으면 모든 요청 보류 |
-| `timeoutCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
+| `stallCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면 종류: `detail`(유지기별 슬롯 5줄) / `summary`(한 줄 요약) |
 | `detailPerPage` | `2` | 상세 화면 한 페이지당 유지기 수 (2 → 2대씩) |
@@ -300,7 +300,7 @@ dryRun=false
 4. 각 슬롯: `부족분 = 유지수량 - 보관량` → 0 이하면 "충족"
 5. 부족하면 아래 순서로 **중복 요청을 걸러냄**
    1. 내가 넣은 요청이 아직 진행 중(`isComputing`) → 건너뜀
-   2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
+   2. 정지 중단 후 대기(`stallCooldown`) → 건너뜀
    3. 유지기 자체가 그 슬롯 작업 중(`isDone=false`) → 건너뜀
    4. **AE CPU 작업에 그 품목이 포함**(`cpuSkipScope=any`: `finalOutput` + `storedItems`/`pendingItems`/`activeItems`) → 건너뜀 (사람이 요청한 작업이어도 동일)
       - v2.5부터 `getCpus()` 의 **행 테이블에서 `.cpu` 값**을 꺼내 검사합니다(이전에는 행을 값으로 착각해 전부 건너뜀).
@@ -344,7 +344,7 @@ dryRun=false
 | `once` (monitor) | 5개 슬롯 읽기 정상, 아이템 부족 3,072 / 유체 부족 50,000 mB 계산, 요청 안 함 |
 | `drive 5` | `setEnable(1,false)`, `setEnable(2,false)` → `request(512)`, `request(16000)` → 화면에 `[요청 512 진행 0/60초]`, `다음 요청까지 5초` 표시 → 인터럽트 시 **원상복구** |
 | **`CPU_BUSY_MATCH=1 drive 30`** | 슬롯1은 `AE 제작 중(중복 요청 안 함)` 으로 건너뛰고, 슬롯2만 `request(16000)` 실행 (중복 방지 확인) |
-| **타임아웃** `requestTimeout=3` | 3초 경과 시 로그 `슬롯 1: 3초 동안 완료되지 않아 요청을 중단했습니다 (AE CPU 작업 취소됨)` + mock `CPU cancel()` 호출 확인. 카운트다운은 60→59→58초로 실시간 갱신 |
+| **타임아웃** `requestTimeout=3` (v2.2~2.5, v3.0에서 제거) | 3초 경과 시 로그 `슬롯 1: 3초 동안 완료되지 않아 요청을 중단했습니다 (AE CPU 작업 취소됨)` + mock `CPU cancel()` 호출 확인 |
 | `COMPONENT_SET=interface` + drive | `me_interface` 로 인식해 동일하게 요청/원상복구 |
 | `COMPONENT_SET=none` | 크래시 없이 `ME 조회 불가(me_controller/me_interface 없음)` |
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
