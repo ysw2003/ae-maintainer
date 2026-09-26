@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.3"
+local VERSION = "2.4"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -409,43 +409,56 @@ local function stackMatches(slot, st)
   return false
 end
 
--- CPU 안에 이 품목이 들어 있는가 (보관/대기/제작중 목록)
-local function cpuListsHave(cpu, slot)
-  for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
-    local ok, list = callValue(cpu, meth)
-    if ok and type(list) == "table" then
-      for _, st in ipairs(list) do
-        if stackMatches(slot, st) then return meth end
-      end
+-- 사이클당 1회: 모든 CPU 의 상태/내용을 미리 읽어 스냅샷으로 만든다.
+--   busy(=활발히 제작 중) 여부와 **무관하게** 목록을 읽는다.
+--   (AE2 는 출력 막힘/재료 대기 상태에서 isBusy=false, isActive=true 일 수 있음)
+local function buildCpuSnapshot(cpus)
+  local snap = {}
+  if type(cpus) ~= "table" then return snap end
+  for i, cpu in ipairs(cpus) do
+    local e = { idx = i, cpu = cpu,
+                busy = callBool(cpu, "isBusy") and true or false,
+                active = callBool(cpu, "isActive") and true or false,
+                final = nil, lists = {} }
+    local okf, final = callValue(cpu, "finalOutput")
+    if okf and type(final) == "table" then e.final = final end
+    for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
+      local ok, list = callValue(cpu, meth)
+      if ok and type(list) == "table" then e.lists[meth] = list end
     end
+    snap[#snap + 1] = e
   end
-  return nil
+  return snap
 end
 
--- cpus: 조회한 CPU 목록(값 프록시 배열). 반환: cpu, 이유
---   cpuSkipScope="any"  → 최종산출물 + 보관/대기/제작중 목록 어디에든 있으면 그 CPU
---   cpuSkipScope="final"→ 최종산출물일 때만
-local function findCraftingCpu(cpus, slot, force)
+-- 스냅샷에서 이 품목을 가진 CPU 찾기. 반환: cpu, 이유
+local function findCraftingCpuSnap(snap, slot, force)
   if not (force or CONFIG.skipIfCrafting) then return nil end
-  if type(cpus) ~= "table" then return nil end
-  for _, cpu in ipairs(cpus) do
-    if callBool(cpu, "isBusy") then
-      local ok, final = callValue(cpu, "finalOutput")
-      if ok and stackMatches(slot, final) then return cpu, "finalOutput" end
-      if CONFIG.cpuSkipScope ~= "final" then
-        local which = cpuListsHave(cpu, slot)
-        if which then return cpu, which end
+  if type(snap) ~= "table" then return nil end
+  for _, e in ipairs(snap) do
+    if e.final and stackMatches(slot, e.final) then
+      return e.cpu, string.format("finalOutput(CPU%d)", e.idx)
+    end
+    if CONFIG.cpuSkipScope ~= "final" then
+      for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
+        local list = e.lists[meth]
+        if list then
+          for _, st in ipairs(list) do
+            if stackMatches(slot, st) then
+              return e.cpu, string.format("%s(CPU%d)", meth, e.idx)
+            end
+          end
+        end
       end
     end
   end
   return nil
 end
 
--- 사용 중인 CPU 가 하나라도 있는가 (skipIfAnyCpuBusy 용)
-local function anyCpuBusy(cpus)
-  if type(cpus) ~= "table" then return false end
-  for _, cpu in ipairs(cpus) do
-    if callBool(cpu, "isBusy") then return true end
+-- 스냅샷 기준: 사용 중(제작 중이거나 활성) CPU 가 하나라도 있는가
+local function anyCpuBusySnap(snap)
+  for _, e in ipairs(snap) do
+    if e.busy or e.active then return true end
   end
   return false
 end
@@ -540,11 +553,12 @@ local function cancelCraft(ctx, p)
   local cpu, why = nil, nil
   if p.cpu then cpu, why = p.cpu, "요청 시 기록된 CPU" end
   local okc, cpus = pcall(ctx.mc.getCpus)
-  if not cpu and okc then cpu, why = findCraftingCpu(cpus, p.slot, true) end
-  if not cpu and okc and CONFIG.cancelFallback == "single" and type(cpus) == "table" then
+  local snap = okc and buildCpuSnapshot(cpus) or {}
+  if not cpu and #snap > 0 then cpu, why = findCraftingCpuSnap(snap, p.slot, true) end
+  if not cpu and CONFIG.cancelFallback == "single" then
     local busy = {}
-    for _, c2 in ipairs(cpus) do
-      if callBool(c2, "isBusy") then busy[#busy + 1] = c2 end
+    for _, e in ipairs(snap) do
+      if e.busy or e.active then busy[#busy + 1] = e.cpu end
     end
     if #busy == 1 then cpu, why = busy[1], "사용 중 CPU 1대(대상 특정 불가)" end
   end
@@ -646,7 +660,7 @@ local function slotHead(s)
 end
 
 -- 유지기 1대의 슬롯들을 처리해 통계(st)와 상세 줄(st.lines)을 채운다
-local function processMaintainer(ctx, m, items, fluids, cpus, st)
+local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
   local t = nowSeconds()
   for i = 1, SLOT_COUNT do
     local s = readSlot(m.proxy, i)
@@ -722,12 +736,12 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
             st.crafting = st.crafting + 1
             st.lines[i] = head .. "  유지기 자체 작업 진행 중(중복 요청 안 함)"
           else
-            local cpu = findCraftingCpu(cpus, s)
+            local cpu, why = findCraftingCpuSnap(cpuSnap, s)
             if cpu then
               st.short = st.short + 1
               st.crafting = st.crafting + 1
-              st.lines[i] = head .. "  AE 제작 중(중복 요청 안 함)"
-            elseif CONFIG.skipIfAnyCpuBusy and anyCpuBusy(cpus) then
+              st.lines[i] = head .. "  AE 제작 중(중복 요청 안 함) " .. tostring(why or "")
+            elseif CONFIG.skipIfAnyCpuBusy and anyCpuBusySnap(cpuSnap) then
               st.short = st.short + 1
               st.crafting = st.crafting + 1
               st.lines[i] = head .. "  다른 CPU 작업 중(보류)"
@@ -748,7 +762,7 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
                   -- 요청 직후 그 작업을 담당하는 CPU 참조를 확보해 둔다(타임아웃 취소용)
                   local cpuRef = nil
                   local okc, fresh = pcall(ctx.mc.getCpus)
-                  if okc then cpuRef = findCraftingCpu(fresh, s, true) end
+                  if okc then cpuRef = findCraftingCpuSnap(buildCpuSnapshot(fresh), s, true) end
                   state.pending[key] = { status = stt, amount = amount, slot = s,
                                          maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef,
                                          stockAtRequest = stored, lastStock = stored }
@@ -785,7 +799,7 @@ local function runCycle(ctx)
     end
   end
 
-  local items, fluids, cpus = nil, nil, nil
+  local items, fluids, cpuSnap = nil, nil, {}
   if ctx.mc then
     if CONFIG.bulkQuery then
       local okb, it, fl, gotItems = pcall(buildStock, ctx.mc)
@@ -793,13 +807,13 @@ local function runCycle(ctx)
       -- 실패하면 items=nil → 슬롯별 개별 조회로 자동 폴백
     end
     local okc, c = pcall(ctx.mc.getCpus)
-    if okc and type(c) == "table" then cpus = c end
+    if okc then cpuSnap = buildCpuSnapshot(c) end
   end
 
   for idx, m in ipairs(ctx.maints) do
     local st = { idx = idx, maint = m, lines = {}, used = 0, short = 0, requested = 0,
                  crafting = 0, waiting = 0, missing = 0, pendingN = 0 }
-    processMaintainer(ctx, m, items, fluids, cpus, st)
+    processMaintainer(ctx, m, items, fluids, cpuSnap, st)
     for _, k in ipairs({ "short", "requested", "crafting", "waiting", "missing" }) do
       total[k] = (total[k] or 0) + (st[k] or 0)
     end

@@ -106,13 +106,15 @@ end
 
 -- ---- Crafting CPU 흉내 (getCpus) ---- (값 = 프록시 테이블)
 --   CPU_BUSY_MATCH=1  : 처음부터 CPU 가 사용 중
+--   CPU_NOT_BUSY=1    : isBusy=false, isActive=true (출력 막힘/재료 대기 상태 흉내 — 제보된 증상)
 --   CPU_ITEM_IN_LIST=1: 최종산출물로는 안 보이고 storedItems 에만 우리 품목이 있는 상황
 --   CPU_OTHER_ITEM=1  : CPU 가 다른 품목을 제작 중(우리 품목 없음 → 단일 CPU 폴백 검증)
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
+local CPU_NOT_BUSY = os.getenv("CPU_NOT_BUSY") == "1"
 local CPU_ITEM_IN_LIST = os.getenv("CPU_ITEM_IN_LIST") == "1"
 local CPU_OTHER_ITEM = os.getenv("CPU_OTHER_ITEM") == "1"
 local cpuObj = wrapValue({
-  isBusy  = function(self) return cpuBusy end,
+  isBusy  = function(self) if CPU_NOT_BUSY then return false end return cpuBusy end,
   isActive = function(self) return cpuBusy end,
   finalOutput = function(self)
     if not cpuBusy then return nil end
