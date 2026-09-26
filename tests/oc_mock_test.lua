@@ -10,6 +10,7 @@
 --   환경변수
 --     TARGET=/경로/ae_maintainer.lua   검사 대상 변경 (기본: ../ae_maintainer.lua 위치)
 --     COMPONENT_SET=controller|interface|none   네트워크 컴포넌트 구성 (기본 controller)
+--     MAINTAINER_COUNT=N                유지기 대수(기본 1, 2대 이상이면 다중 처리 검증)
 --     CPU_BUSY_MATCH=1                  처음부터 같은 품목을 제작 중인 CPU 가 있는 상황
 --     MAX_SLEEPS=N                      N초 후 인터럽트(mock Ctrl+C) 발생 (기본 2)
 --     CFG_EXTRA="k=v;k=v"               임시 ae_maintainer.cfg 를 만들어 설정 변경
@@ -63,19 +64,28 @@ local craftable = wrapValue({
 
 -- ---- me_controller 컴포넌트 흉내 ----
 local mcObj = {}
-local NET = { ["gregtech:gt.blockmachines"] = 1024 }   -- 아이템 보관량
+local ITEM_LABELS = {
+  ["gregtech:gt.blockmachines"] = "Machine Casing",
+  ["minecraft:iron_ingot"] = "Iron Ingot",
+}
+local NET = {                      -- 네트워크 보관량(이름 -> 수량)
+  ["gregtech:gt.blockmachines"] = 1024,
+  ["minecraft:iron_ingot"] = 300,
+}
 function mcObj.getItemsInNetwork(filter)
   filter = filter or {}
   local out = {}
-  if filter.name and NET[filter.name] then
-    out[1] = { name = filter.name, label = "Machine Casing", damage = filter.damage or 0,
-               size = NET[filter.name], maxSize = 64, hasTag = false }
+  for name, size in pairs(NET) do
+    if (not filter.name) or filter.name == name then
+      out[#out + 1] = { name = name, label = ITEM_LABELS[name] or name,
+                        damage = filter.damage or 0, size = size, maxSize = 64, hasTag = false }
+    end
   end
   return out
 end
 function mcObj.getFluidsInNetwork(filter)
   filter = filter or {}
-  if filter.name == "water" then
+  if (not filter.name) or filter.name == "water" then
     return { { name = "water", label = "Water", amount = 50000 } }
   end
   return {}
@@ -106,35 +116,58 @@ local cpuObj = wrapValue({
 })
 function mcObj.getCpus() return { cpuObj } end
 
--- ---- level_maintainer 컴포넌트 흉내 ----
-local lmObj = {}
-local SLOTS = {
-  [1] = { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, maxDamage = 0,
-          hasTag = false, quantity = 4096, batch = 512, isFluid = false, isEnable = true, isDone = true },
-  [2] = { name = "ae2fc:fluid_drop", label = "Fluid Drop", damage = 0, maxDamage = 0,
-          hasTag = false, quantity = 100000, batch = 16000, isFluid = true, isEnable = true, isDone = true,
-          fluid = { name = "water", label = "Water", amount = 1000 } },
+-- ---- level_maintainer 컴포넌트 흉내 (여러 대) ----
+--   MAINTAINER_COUNT=1(기본) | 3 등
+local MAINTAINER_COUNT = tonumber(os.getenv("MAINTAINER_COUNT") or "1")
+local maintainers = {}
+
+local function makeSlot(name, label, quantity, batch, fluidName)
+  local s = { name = name, label = label, damage = 0, maxDamage = 0, hasTag = false,
+              quantity = quantity, batch = batch, isFluid = (fluidName ~= nil),
+              isEnable = true, isDone = true }
+  if fluidName then
+    s.fluid = { name = fluidName, label = fluidName, amount = 1000 }
+  end
+  return s
+end
+
+-- 유지기별 슬롯 (1대: GT 기계 케이싱 + 물 / 2대: 철괴 / 3대: 비어 있음)
+local SLOT_SETS = {
+  { makeSlot("gregtech:gt.blockmachines", "Machine Casing", 4096, 512),
+    makeSlot("ae2fc:fluid_drop", "Water", 100000, 16000, "water") },
+  { makeSlot("minecraft:iron_ingot", "Iron Ingot", 2048, 256) },
+  {},
 }
-function lmObj.getSlot(i) return SLOTS[tonumber(i) or 1] end
-function lmObj.setEnable(i, v)
-  io.write(string.format("   >> (mock) setEnable(%s, %s)\n", tostring(i), tostring(v)))
-  return true
+
+local function makeMaintainer(tag, slots)
+  local lm = {}
+  local data = slots or {}
+  function lm.getSlot(i) return data[tonumber(i) or 1] end
+  function lm.setEnable(slot, v)
+    io.write(string.format("   >> (mock) %s.setEnable(%s, %s)\n", tag, tostring(slot), tostring(v)))
+    return true
+  end
+  function lm.setSlot(slot, q, b)
+    io.write(string.format("   >> (mock) %s.setSlot(%s, %s, %s)\n", tag, tostring(slot), tostring(q), tostring(b)))
+    return true
+  end
+  function lm.isDone(i) return true end
+  function lm.isEnable(i) return true end
+  function lm.active() return true end
+  return lm
 end
-function lmObj.setSlot(i, q, b)
-  io.write(string.format("   >> (mock) setSlot(%s, %s, %s)\n", tostring(i), tostring(q), tostring(b)))
-  return true
+
+local comps = {}
+for i = 1, MAINTAINER_COUNT do
+  local addr = string.format("aaaa-%04d", i)
+  maintainers[i] = { addr = addr, proxy = makeMaintainer("maint" .. i, SLOT_SETS[i] or {}) }
+  comps[addr] = { t = "level_maintainer", o = maintainers[i].proxy }
 end
-function lmObj.isDone(i) return true end
-function lmObj.isEnable(i) return true end
-function lmObj.active() return true end
 
 -- ---- OC 런타임 흉내 (실제 OpenOS와 동일: 전역이 아니라 '모듈'로 제공) ----
 -- 컴포넌트 구성: COMPONENT_SET=controller(기본) | interface | none
 local COMPONENT_SET = os.getenv("COMPONENT_SET") or "controller"
 
-local comps = {
-  ["aaaa-1111"] = { t = "level_maintainer", o = lmObj },
-}
 if COMPONENT_SET == "controller" then
   comps["bbbb-2222"] = { t = "me_controller", o = mcObj }
 elseif COMPONENT_SET == "interface" then
@@ -185,8 +218,8 @@ os.sleep = function(s)
   if sleeps >= MAX_SLEEPS then error("interrupted (mock Ctrl+C)", 0) end
 end
 
-io.write(string.format("### COMPONENT_SET=%s  cpuBusy=%s  MAX_SLEEPS=%d\n",
-  COMPONENT_SET, tostring(cpuBusy), MAX_SLEEPS))
+io.write(string.format("### TARGET=%s  COMPONENT_SET=%s  유지기=%d대  cpuBusy=%s  MAX_SLEEPS=%d\n",
+  TARGET, COMPONENT_SET, MAINTAINER_COUNT, tostring(cpuBusy), MAX_SLEEPS))
 
 -- CFG_EXTRA 로 임시 설정 파일을 만들어 프로그램 설정을 바꿀 수 있다
 local cfgText = os.getenv("CFG_EXTRA")

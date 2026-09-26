@@ -6,11 +6,12 @@ OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트�
 | 항목 | 내용 |
 |---|---|
 | 읽는 값 | 품목(아이템/유체), 유지 수량(`quantity`), 1회 제작량(`batch`), 슬롯 사용여부, 작업 진행상태 |
-| 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 |
+| **다중 유지기** | 어댑터에 붙은 **모든 `ME Level Maintainer`** 를 자동 인식(주소순) → 요약 화면에서 페이지 단위로 표시, `show <번호>` 로 1대 상세 |
+| 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 (유지기 많을 땐 보관량을 사이클당 1회 일괄 조회) |
 | 중복 요청 방지 | **AE CPU 가 같은 품목을 이미 제작 중이면 새 요청을 넣지 않음** (`finalOutput` 비교) + 유지기 자체 작업 중이어도 건너뜀 |
 | 응답 없는 요청 | 지정 시간(기본 **60초**) 안에 완료되지 않으면 **요청을 중단하고 해당 AE CPU 작업 취소 시도** |
 | 화면 표시 | 다음 요청까지 남은 시간 + 진행 중 요청 경과/타임아웃을 **1초마다** 갱신 |
-| 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer), `me_controller` 또는 `me_interface` |
+| 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer, 여러 대), `me_controller` 또는 `me_interface` |
 | 검증 환경 | GTNH 2.9.0-beta-3 · `appliedenergistics2-rv3-beta-1050-GTNH` · `ae2fc-1.5.106-gtnh` · `OpenComputers-1.12.61-GTNH` |
 
 > AE2 기본 모드에는 이 블록이 없고, **AE2FC(`ae2fc`)가 추가**합니다. AE2FC가 OpenComputers 드라이버를 내장하고 있어
@@ -78,13 +79,18 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 
 | 명령 | 동작 |
 |---|---|
-| `ae_maintainer` | 설정대로 상시 실행 (기본 drive / 60초) |
+| `ae_maintainer` | 설정대로 상시 실행 (요약 화면 + 자동 페이지 전환) |
 | `ae_maintainer monitor` | 읽기·표시만 (요청 안 함) |
 | `ae_maintainer drive 30` | 30초 주기로 직접 요청 |
+| `ae_maintainer show 3` | **3번 유지기 1대만** 상세 표시(슬롯 5줄) |
+| `ae_maintainer list` | 전체 유지기/슬롯 상세 **1회 출력** |
 | `ae_maintainer once` | 1회만 계산/표시 |
-| `ae_maintainer set 1 4096 512` | 1번 슬롯: 유지 4096, 1회 제작 512 로 변경 |
-| `ae_maintainer diag` | 값/메서드 호출 진단 정보 출력 (문제 생기면 이 출력을 보내주세요) |
+| `ae_maintainer set 2 1 4096 512` | **2번 유지기** 1번 슬롯: 유지 4096, 1회 제작 512 |
+| `ae_maintainer diag` | 진단 정보(모든 유지기 + 값 타입) 출력 |
 | `ae_maintainer help` | 도움말 |
+
+> `#번호` 는 **어댑터 주소 오름차순** 순서입니다. 매 주기 다시 확인하므로 유지기를 추가/제거해도 자동 반영됩니다.
+> cfg 에 `name.<주소>=창고A` 를 넣으면 번호 옆에 이름이 표시됩니다(주소는 `list`/`diag` 로 확인).
 
 ### 설정 파일 (`ae_maintainer.cfg`)
 
@@ -107,6 +113,12 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `cancelOnTimeout` | `true` | 타임아웃 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
 | `timeoutCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
+| `pageSize` | `10` | 요약 화면 한 페이지에 보여줄 유지기 수 |
+| `pageSeconds` | `10` | 자동 페이지 전환 간격(초). `0`=전환 안 함 |
+| `maxMaintainers` | `0` | `0`=모든 유지기, N=앞에서 N대만 사용 |
+| `bulkQuery` | `true` | 보관량을 사이클당 1회 전체 조회(유지기가 많을 때 훨씬 빠름) |
+| `name.<주소>` | (없음) | 유지기 별칭. 예: `name.36720bcd-…=창고A` |
+| `maintainerAddress` | (없음) | 특정 유지기 **1대만** 쓸 때 어댑터 주소 지정 |
 
 ## 4. 파일 구성
 
@@ -124,6 +136,8 @@ tests/oc_mock_setup.lua      설치 스크립트 검증 하네스
 lua5.3 tests/oc_mock_test.lua once               # 읽기 경로
 lua5.3 tests/oc_mock_test.lua drive 5            # 요청 + 카운트다운 + 원상복구
 lua5.3 tests/oc_mock_test.lua diag               # 진단 출력
+lua5.3 tests/oc_mock_test.lua list               # 전체 유지기 상세
+MAINTAINER_COUNT=3 lua5.3 tests/oc_mock_test.lua drive 10      # 다중 유지기(3대)
 CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
 CFG_EXTRA=$'requestTimeout=3' MAX_SLEEPS=8 lua5.3 tests/oc_mock_test.lua drive   # 타임아웃+CPU 취소
 TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크립트

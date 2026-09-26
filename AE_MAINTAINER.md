@@ -26,6 +26,7 @@
 | AE2 기본 모드에 존재? | **없음** (AE2 `rv3-beta-1050-GTNH` 안에 Maintainer 관련 클래스 0개) |
 | OpenComputers로 읽을 수 있나? | **예 — ae2fc가 OC 드라이버를 내장**하고 있음 (`component "level_maintainer"`) |
 | 슬롯 수 / 인덱스 | **5개, 1부터 시작(1~5)** (`TileLevelMaintainer.REQ_COUNT = 5`) |
+| 다중 유지기 | 어댑터에 붙은 **모든** `level_maintainer` 를 인식(주소 오름차순). 요약 화면(페이지·자동 전환), `show <번호>` 상세, `list` 전체 출력 |
 | 읽을 수 있는 값 | 품목(아이템/유체), 유지 수량 `quantity`, 1회 제작량 `batch`, 슬롯 사용여부, 작업 진행상태 |
 | 요청(제작)도 가능? | **예** — `me_controller` 컴포넌트의 `getCraftables(filter)` → `craftable.request(수량)` |
 | 주기 제어 | 프로그램에서 `interval`(초)로 제어. 유지기 자체 주기는 `config/ae2fc.cfg`의 `levelmaintainer.minTick/maxTick` |
@@ -191,9 +192,19 @@ wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintain
 | `ae_maintainer monitor` | **읽기/표시만** (요청 안 함) — 먼저 이걸로 값을 확인하세요 |
 | `ae_maintainer drive 30` | 30초 주기로 직접 요청 |
 | `ae_maintainer once` | 1회만 계산해서 표시 (설정 변경 없음) |
-| `ae_maintainer set 1 4096 512` | 1번 슬롯: 유지 4096, 1회 제작 512 로 변경 |
+| `ae_maintainer set 1 4096 512` | — (v2.0에서 형식 변경) |
 | `ae_maintainer diag` | 값/메서드 호출 **진단 정보** 출력 (문제 발생 시 이 출력을 보내주세요) |
 | `ae_maintainer help` | 도움말 |
+
+### v2.0 명령 (여러 유지기)
+
+| 명령 | 동작 |
+|---|---|
+| `ae_maintainer` / `monitor` / `drive 30` | 요약 화면(페이지 + 자동 전환)으로 상시 실행 / 읽기만 / 요청 |
+| `ae_maintainer show <번호>` | 그 유지기 1대만 슬롯 5줄 상세 표시 |
+| `ae_maintainer list` | 전체 유지기·슬롯 상세를 1회 출력(스크롤 확인용) |
+| `ae_maintainer set <번호> <슬롯> <유지> <배치>` | 해당 유지기의 유지수량/배치 변경 |
+| `ae_maintainer diag` | 모든 유지기 + 값 타입 진단 |
 
 설정 파일(선택): 프로그램과 같은 폴더에 `ae_maintainer.cfg` 를 두면 값이 덮어써집니다.
 ```ini
@@ -224,13 +235,19 @@ dryRun=false
 | `cancelOnTimeout` | `true` | 타임아웃 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
 | `timeoutCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
+| `pageSize` / `pageSeconds` | `10` / `10` | 요약 화면 페이지당 유지기 수 / 자동 페이지 전환 간격(초, 0=끔) |
+| `maxMaintainers` | `0` | `0`=모든 유지기, N=앞에서 N대만 |
+| `bulkQuery` | `true` | 보관량을 사이클당 1회 전체 조회(유지기 많을 때 빠름). 실패 시 자동으로 슬롯별 조회 |
+| `name.<주소>` | 없음 | 유지기 별칭 (예: `name.36720bcd-…=창고A`) |
+| `maintainerAddress` | 없음 | 특정 유지기 1대만 사용할 때 어댑터 주소 |
 
-### 매 주기 판단 순서 (v1.2)
+### 매 주기 판단 순서 (v2.0)
 
-1. 슬롯 1~5 → 품목/유지수량/배치/사용여부 읽기
-2. (drive 모드면) 사용 중인 슬롯의 유지기 자동요청을 끔
-3. `me_controller`/`me_interface` 로 현재 보관량 조회 (아이템=개수, 유체=mB)
-4. `부족분 = 유지수량 - 보관량` → 0 이하면 "충족"
+1. `component.list("level_maintainer")` 로 **모든 유지기** 열거(주소 오름차순) → 각 유지기의 슬롯 1~5 읽기
+2. (drive 모드면) **모든 유지기**의 사용 중 슬롯 자동요청을 끔(takeover)
+3. 보관량: `bulkQuery=true` 면 `getItemsInNetwork()`·`getFluidsInNetwork()` 를 **사이클당 1회** 호출해
+   로컬에서 이름/표시이름으로 합산(유지기가 많을 때 빠름). 실패하거나 끄면 슬롯별 개별 조회로 자동 폴백
+4. 각 슬롯: `부족분 = 유지수량 - 보관량` → 0 이하면 "충족"
 5. 부족하면 아래 순서로 **중복 요청을 걸러냄**
    1. 내가 넣은 요청이 아직 진행 중(`isComputing`) → 건너뜀
    2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
@@ -262,7 +279,10 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
-| `set 2 250000 32000` / `help` | `setSlot(2, …)` 반환 `true` / 도움말 정상 |
+| **v2.0 다중 유지기** | 3대 구성 하네스로 검증: `유지기 3대 감지: #1:aaaa0001 #2:aaaa0002 #3:aaaa0003` → 3대 모두 takeover + `request(512)`, `request(16000)`, `request(256)` 발행 → 인터럽트 시 3대 전부 `setEnable(...,true)` 원상복구. `list` 로 슬롯 2/5·1/5·0/5 표시, `pageSize=2` 로 `1/2 페이지` 확인 |
+| **v2.0 show/set/diag** | `show 2` → 그 유지기 슬롯 상세 + 요청, `set 2 1 4096 512` → `maint2.setSlot(1, …)`, `diag` → 3대 목록 + `type=table / .request=table` |
+| **v2.0 bulkQuery** | `getItemsInNetwork()` 무필터 1회 호출로 1,024(기계 케이싱)·300(철괴) 를 잡아 각각 부족 계산(필터 방식도 유지) |
+| `set 2 250000 32000` / `help` | (v2.0은 `set <번호> <슬롯> <유지> <배치>`) / 도움말 정상 |
 | **v1.3 cfg 자동 생성** | 빈 폴더에서 실행 → `설정 파일 ae_maintainer.cfg 가 없어 기본값으로 만들었습니다` 로그 + 14개 키가 든 파일 생성 확인 |
 | **v1.3 `ae_maintainer_setup.lua`** (mock) | 1회차 프로그램+cfg 설치(원본과 sha256 일치), 2회차 cfg `건너뜀(이미 있음)`, 3회차 `--force` 로 둘 다 갱신 |
 
@@ -303,11 +323,14 @@ dryRun=false
 | `요청 실패: request 호출 실패(table)` | **v1.3 이하 버그**(v1.4에서 수정). OC는 값의 메서드를 "호출 가능한 테이블"로 노출하는데, v1.3 이하는 함수인지 검사해 거부했습니다. v1.4로 갱신하세요 |
 | 설치 중 `attempt to call a table value (field 'close')` | **setup v1.1 이하 버그**(v1.2에서 수정). `handle.close()` 는 이 환경에서 호출 불가이며 호출할 필요도 없습니다(EOF에서 자동 종료) |
 | 원인 파악이 안 됨 | `ae_maintainer diag` 를 실행해 출력을 그대로 보내주세요 |
+| 유지기가 많아 한 주기가 느림 | `bulkQuery=true`(기본) 확인, `pageSize` 조정. 그래도 느리면 `interval` 을 늘리거나 `maxMaintainers` 로 분할 운영 |
+| 일부 유지기가 목록에 안 보임 | `list` 출력의 `#번호`/주소 확인. 어댑터 접촉 여부·`level_maintainer` 컴포넌트 존재 여부(`diag`) 점검. `maintainerAddress` 를 설정했다면 그 1대만 표시됩니다 |
 
 ## 11. 변경 이력
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v2.0 | 2026-09-26 | **다중 유지기 지원**: 어댑터에 붙은 모든 `level_maintainer` 자동 인식(주소 오름차순). 요약 화면(페이지 + 자동 전환 `pageSize`/`pageSeconds`, 별칭 `name.<주소>`), `show <번호>` 상세, `list` 전체 출력. `set` 이 `<번호> <슬롯> <유지> <배치>` 로 변경. **성능**: 보관량을 사이클당 1회 일괄 조회(`bulkQuery`, 실패 시 슬롯별 폴백), CPU 목록도 사이클당 1회. 요청 추적/타임아웃/원상복구를 유지기별로 처리 |
 | v1.4 | 2026-09-26 | **긴급 수정(게임 내 요청 실패)**: OC 값(userdata)의 메서드는 함수가 아니라 **호출 가능한 테이블**로 노출되는데(v1.3 이하는 `type(fn)=="function"` 검사로 거부 → `요청 실패: request 메서드 없음`), 타입을 따지지 않고 호출하도록 변경. `getStack`/`isBusy`/`cancel` 등 모든 값 메서드에 적용. **`ae_maintainer diag`** 진단 명령 추가. 하네스를 실제와 동일하게(프록시 테이블) 개선해 회귀 방지 |
 | setup v1.2 | 2026-09-26 | **설치 실패 수정**: `handle.close()` 호출 제거(이 환경은 연쇄 `__call` 미지원 → `attempt to call a table value (field 'close')`). OpenOS `wget` 과 같이 이터레이터로 읽고 EOF 에서 자동 종료 |
 | v1.3.1 | 2026-09-26 | **설치 스크립트 이름 변경**: `install.lua` → **`ae_maintainer_setup.lua`**. OpenOS 내장 `install`(`/bin/install.lua`, OS 디스크 설치)과 이름이 겹쳐 PATH 상 내장 명령이 먼저 실행되는 문제 수정(스크립트 VERSION 1.1). 검증 하네스도 `tests/oc_mock_setup.lua` 로 변경 |
