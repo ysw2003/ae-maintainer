@@ -52,6 +52,9 @@ package.preload["filesystem"] = function()
 end
 
 -- internet.request(url) → 로컬 저장소의 같은 이름 파일 내용을 돌려주는 가짜 소켓
+--   실제 OpenOS internet.lua 와 동일하게:
+--     · handle() / for chunk in handle do 로 읽는다
+--     · handle.close 는 '호출 불가 테이블'(연쇄 __call 미지원) → close() 를 쓰면 테스트 실패
 package.preload["internet"] = function()
   return {
     request = function(url)
@@ -62,15 +65,23 @@ package.preload["internet"] = function()
       local data = f and f:read("*a") or nil
       if f then f:close() end
       local served = false
-      return setmetatable({}, {
+      local handle
+      handle = setmetatable({}, {
         __call = function()
           if served then return nil end
           served = true
           if not data then error("mock: 파일 없음 " .. src, 2) end
           return data
         end,
-        __index = { close = function() end },
+        __index = {
+          close = setmetatable({}, {
+            __call = function()
+              error("attempt to call a table value (field 'close')", 2)
+            end,
+          }),
+        },
       })
+      return handle
     end,
   }
 end

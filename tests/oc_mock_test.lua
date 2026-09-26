@@ -9,27 +9,32 @@
 --
 --   환경변수
 --     TARGET=/경로/ae_maintainer.lua   검사 대상 변경 (기본: ../ae_maintainer.lua 위치)
---     STRICT=1                          userdata 메서드를 self 없이 부르는 규약으로 흉내
 --     COMPONENT_SET=controller|interface|none   네트워크 컴포넌트 구성 (기본 controller)
 --     CPU_BUSY_MATCH=1                  처음부터 같은 품목을 제작 중인 CPU 가 있는 상황
 --     MAX_SLEEPS=N                      N초 후 인터럽트(mock Ctrl+C) 발생 (기본 2)
 --     CFG_EXTRA="k=v;k=v"               임시 ae_maintainer.cfg 를 만들어 설정 변경
 --
---   주의: 실제 OpenOS 처럼 component/computer/term 을 **전역으로 만들지 않는다.**
---         (모듈 require 로만 제공) → 프로그램이 전역을 쓰면 즉시 실패한다.
+--   주의: 실제 환경을 그대로 흉내 낸다.
+--     1) component/computer/term 을 전역으로 만들지 않는다(모듈 require 로만 제공)
+--     2) OC 커널(machine.lua)과 같이 userdata 값은 프록시 테이블, 그 메서드는
+--        __call 을 가진 '테이블'(함수가 아님)이며 self 가 자동 주입된다
+--        → 이 두 가지를 어기면 이 하네스가 즉시 실패한다(회귀 방지)
+--     3) 인터넷 핸들의 close() 는 실제와 같이 호출 불가로 둔다
 --------------------------------------------------------------------------------
-local STRICT = os.getenv("STRICT") == "1"
--- 대상 프로그램은 이 하네스 기준 ../ae_maintainer.lua (TARGET 환경변수로 변경 가능)
 local selfDir = (arg and arg[0] and arg[0]:match("^(.*)[/\\]")) or "."
 local TARGET = os.getenv("TARGET") or (selfDir .. "/../ae_maintainer.lua")
 
--- userdata 메서드의 self 처리 (OC 규약 두 가지를 모두 흉내)
-local function resolve(a, b)
-  if type(a) == "table" and a.__ud then
-    if STRICT then error("unexpected self argument") end
-    return a, b
+-- ---- OC 값(userdata) 흉내: 실제 커널(machine.lua)과 동일한 구조 ----
+--   값 = 프록시 테이블, 메서드 = __call 을 가진 '테이블'(함수가 아님), self(프록시) 자동 주입
+local function wrapValue(raw)
+  local proxy = { type = "userdata" }
+  for name, fn in pairs(raw) do
+    proxy[name] = setmetatable({ name = name, proxy = proxy }, {
+      __call = function(_, ...) return fn(proxy, ...) end,
+      __tostring = function() return "function" end,
+    })
   end
-  return nil, a
+  return proxy
 end
 
 -- ---- Crafting CPU 상태 (craftable.request 가 busy 로 바꾼다) ----
@@ -37,24 +42,24 @@ local cpuBusy = false
 local cpuCanceled = false
 
 -- ---- 상태 객체(CraftingStatus) 흉내 ----
-local status = { __ud = true }
-function status.isComputing(a, b) resolve(a, b); return true end
-function status.hasFailed(a, b)   resolve(a, b); return false end
-function status.isCanceled(a, b)  resolve(a, b); return false end
-function status.isDone(a, b)      resolve(a, b); return false end
+local status = wrapValue({
+  isComputing = function(self) return true end,
+  hasFailed   = function(self) return false end,
+  isCanceled  = function(self) return false end,
+  isDone      = function(self) return false end,
+})
 
 -- ---- Craftable 흉내 ----
-local craftable = { __ud = true }
-function craftable.getStack(a, b)
-  resolve(a, b)
-  return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 1 }
-end
-function craftable.request(a, b)
-  local _, amount = resolve(a, b)
-  io.write(string.format("   >> (mock) request(%s) 호출됨\n", tostring(amount)))
-  cpuBusy = true          -- 요청하면 CPU 가 그 작업으로 바빠진다
-  return status
-end
+local craftable = wrapValue({
+  getStack = function(self)
+    return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 1 }
+  end,
+  request = function(self, amount)
+    io.write(string.format("   >> (mock) request(%s) 호출됨\n", tostring(amount)))
+    cpuBusy = true          -- 요청하면 CPU 가 그 작업으로 바빠진다
+    return status
+  end,
+})
 
 -- ---- me_controller 컴포넌트 흉내 ----
 local mcObj = {}
@@ -79,27 +84,26 @@ function mcObj.getCraftables(filter)
   return { craftable }
 end
 
--- ---- Crafting CPU 흉내 (getCpus) ----
+-- ---- Crafting CPU 흉내 (getCpus) ---- (값 = 프록시 테이블)
 --   CPU_BUSY_MATCH=1 : 처음부터 slot1 품목을 제작 중인 CPU 가 있는 상황
 --   기본            : 요청(request) 후에 그 CPU 가 busy 가 되는 상황(타임아웃/취소 검증용)
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
-local cpuObj = { __ud = true }
-function cpuObj.isBusy(a, b)  resolve(a, b); return cpuBusy end
-function cpuObj.isActive(a, b) resolve(a, b); return cpuBusy end
-function cpuObj.finalOutput(a, b)
-  resolve(a, b)
-  if not cpuBusy then return nil end
-  return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
-end
-function cpuObj.activeItems(a, b)  resolve(a, b); return {} end
-function cpuObj.storedItems(a, b)  resolve(a, b); return {} end
-function cpuObj.pendingItems(a, b) resolve(a, b); return {} end
-function cpuObj.cancel(a, b)
-  resolve(a, b)
-  cpuCanceled = true
-  io.write("   >> (mock) CPU cancel() 호출됨\n")
-  return true
-end
+local cpuObj = wrapValue({
+  isBusy  = function(self) return cpuBusy end,
+  isActive = function(self) return cpuBusy end,
+  finalOutput = function(self)
+    if not cpuBusy then return nil end
+    return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
+  end,
+  activeItems  = function(self) return {} end,
+  storedItems  = function(self) return {} end,
+  pendingItems = function(self) return {} end,
+  cancel = function(self)
+    cpuCanceled = true
+    io.write("   >> (mock) CPU cancel() 호출됨\n")
+    return true
+  end,
+})
 function mcObj.getCpus() return { cpuObj } end
 
 -- ---- level_maintainer 컴포넌트 흉내 ----
@@ -181,8 +185,8 @@ os.sleep = function(s)
   if sleeps >= MAX_SLEEPS then error("interrupted (mock Ctrl+C)", 0) end
 end
 
-io.write(string.format("### STRICT=%s  COMPONENT_SET=%s  cpuBusy=%s  MAX_SLEEPS=%d\n",
-  tostring(STRICT), COMPONENT_SET, tostring(cpuBusy), MAX_SLEEPS))
+io.write(string.format("### COMPONENT_SET=%s  cpuBusy=%s  MAX_SLEEPS=%d\n",
+  COMPONENT_SET, tostring(cpuBusy), MAX_SLEEPS))
 
 -- CFG_EXTRA 로 임시 설정 파일을 만들어 프로그램 설정을 바꿀 수 있다
 local cfgText = os.getenv("CFG_EXTRA")

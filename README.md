@@ -83,6 +83,7 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `ae_maintainer drive 30` | 30초 주기로 직접 요청 |
 | `ae_maintainer once` | 1회만 계산/표시 |
 | `ae_maintainer set 1 4096 512` | 1번 슬롯: 유지 4096, 1회 제작 512 로 변경 |
+| `ae_maintainer diag` | 값/메서드 호출 진단 정보 출력 (문제 생기면 이 출력을 보내주세요) |
 | `ae_maintainer help` | 도움말 |
 
 ### 설정 파일 (`ae_maintainer.cfg`)
@@ -122,10 +123,13 @@ tests/oc_mock_setup.lua      설치 스크립트 검증 하네스
 ```bash
 lua5.3 tests/oc_mock_test.lua once               # 읽기 경로
 lua5.3 tests/oc_mock_test.lua drive 5            # 요청 + 카운트다운 + 원상복구
+lua5.3 tests/oc_mock_test.lua diag               # 진단 출력
 CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
 CFG_EXTRA=$'requestTimeout=3' MAX_SLEEPS=8 lua5.3 tests/oc_mock_test.lua drive   # 타임아웃+CPU 취소
 TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크립트
 ```
+> 하네스는 실제 환경을 그대로 흉내 냅니다: ① `component`/`computer`/`term` 은 전역이 아니라 모듈,
+> ② 값(userdata)은 프록시 테이블 + 메서드는 **호출 가능한 테이블**, ③ 인터넷 핸들의 `close()` 는 호출 불가.
 
 ## 5. 문제 해결
 
@@ -137,6 +141,9 @@ TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크�
 | `레시피 없음(Not Found)` | 해당 품목의 AE2 패턴이 없거나, CPU/재료 부족 |
 | `wget: This program requires an internet card to run.` | 컴퓨터에 **인터넷 카드**를 꽂으세요 |
 | `install` 을 입력했더니 OS 설치(디스크 선택) 화면이 나옴 | OpenOS **내장 명령**입니다. 이 프로젝트는 `ae_maintainer_setup` 을 사용하세요(이름이 겹치지 않게 바꿨습니다) |
+| `요청 실패: request 호출 실패(table)` (v1.3 이하) | v1.4에서 수정. OC는 값(userdata)의 메서드를 **호출 가능한 테이블**로 노출합니다(함수가 아님). v1.4는 타입을 따지지 않고 호출합니다 |
+| 설치 중 `attempt to call a table value (field 'close')` (setup v1.1 이하) | v1.2(setup)에서 수정. 이 환경에서는 `handle.close()` 를 호출할 수 없어(연쇄 `__call` 미지원) 호출하지 않습니다(EOF에서 자동 종료) |
+| 그래도 원인을 모르겠음 | **`ae_maintainer diag`** 실행 후 출력을 보내주세요 (값 타입·메서드 호출 가능 여부가 나옵니다) |
 
 ## 6. 주의사항
 

@@ -16,7 +16,7 @@
 --     · ae_maintainer.lua 는 항상 최신으로 덮어씁니다.
 --     · ae_maintainer.cfg 는 없을 때만 만듭니다(수정한 설정 보호). --force 로 강제 갱신.
 --------------------------------------------------------------------------------
-local VERSION = "1.1"
+local VERSION = "1.2"
 local SELF = "ae_maintainer_setup"
 local BASE = "https://raw.githubusercontent.com/ysw2003/ae-maintainer/main"
 local FILES = {
@@ -64,12 +64,12 @@ if not fs.isDirectory(dir) then return fail("대상 폴더가 없습니다: " ..
 local function download(url)
   local handle = internet.request(url)
   local parts = {}
-  while true do
-    local chunk = handle()
-    if not chunk then break end
+  -- OpenOS 의 wget 과 같은 방식(이터레이터)으로 읽는다.
+  --   handle.close() 는 이 환경에서 호출할 수 없다(연쇄 __call 미지원 → "attempt to call a table value").
+  --   EOF 에서 라이브러리(internet.lua)가 내부적으로 연결을 닫아주므로 close 를 부르지 않는다.
+  for chunk in handle do
     parts[#parts + 1] = chunk
   end
-  handle.close()
   return table.concat(parts)
 end
 

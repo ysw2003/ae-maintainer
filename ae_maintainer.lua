@@ -30,7 +30,7 @@
 --       컴퓨터를 끄기 전에 ae_maintainer 를 먼저 종료(복원)하는 편이 안전하다.
 --------------------------------------------------------------------------------
 
-local VERSION = "1.3"
+local VERSION = "1.4"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -180,6 +180,32 @@ local function ensureConfigFile(path)
   return true
 end
 
+local unpack = table.unpack or unpack
+
+-- OC 값(userdata)의 메서드 호출 -------------------------------------------------
+--   OC 커널(machine.lua)은 값을 "프록시 테이블"로 감싸고 각 메서드를
+--   `setmetatable({name=..., proxy=...}, {__call=...})` 형태의 **호출 가능한 테이블**로 노출합니다.
+--   → type(value.method) 는 "function" 이 아니라 "table" 입니다.
+--   그래서 함수 여부를 따지지 않고 그대로 호출해 봅니다(점 호출, self 자동 주입).
+local function callValue(obj, method, ...)
+  if obj == nil then return false, method .. " 대상 없음" end
+  local fn = obj[method]
+  if fn == nil then return false, method .. " 메서드 없음(nil)" end
+  local args = { ... }
+  local ok, v = pcall(fn, unpack(args))              -- OC 표준: value.method(args...)
+  if ok then return true, v end
+  local firstErr = v
+  local ok2, v2 = pcall(fn, obj, unpack(args))       -- self 를 명시하는 규약도 시도
+  if ok2 then return true, v2 end
+  return false, string.format("%s 호출 실패(%s): %s", method, type(fn), tostring(firstErr))
+end
+
+local function callBool(obj, method)
+  local ok, v = callValue(obj, method)
+  if not ok then return nil end
+  return v and true or false
+end
+
 -- 컴포넌트 탐색 ---------------------------------------------------------------
 local function listOf(name)
   local out = {}
@@ -320,8 +346,7 @@ local function findCraftable(mc, slot)
     local ok2, all = pcall(mc.getCraftables)
     if ok2 and type(all) == "table" then
       for _, c in ipairs(all) do
-        local ok3, st = pcall(c.getStack, c)
-        if not ok3 then ok3, st = pcall(c.getStack) end
+        local ok3, st = callValue(c, "getStack")
         if ok3 and type(st) == "table" and st.label == slot.label
            and toInt(st.damage) == slot.damage then
           return c, 1, "label"
@@ -334,27 +359,6 @@ end
 
 
 -- ======================= 3) 요청 상태 추적 / takeover ========================
-local unpack = table.unpack or unpack
-
--- userdata 메서드 호출 (OC는 값 종류에 따라 self 주입 여부가 달라 둘 다 시도)
-local function callValue(obj, method, ...)
-  if obj == nil then return false, method .. " 대상 없음" end
-  local fn = obj[method]
-  if type(fn) ~= "function" then return false, method .. " 메서드 없음" end
-  local args = { ... }
-  local ok, v = pcall(fn, obj, unpack(args))
-  if ok then return true, v end
-  local ok2, v2 = pcall(fn, unpack(args))
-  if ok2 then return true, v2 end
-  return false, v
-end
-
-local function callBool(obj, method)
-  local ok, v = callValue(obj, method)
-  if not ok then return nil end
-  return v and true or false
-end
-
 -- 이 슬롯에 대해 프로그램이 넣은 요청이 아직 진행 중인가?
 local function jobBusy(i)
   local p = state.pending[i]
@@ -658,6 +662,7 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer)
   ae_maintainer drive [주기초]    지정 주기(기본 60초)로 직접 요청
   ae_maintainer once             1회만 계산/표시 (설정 변경 X)
   ae_maintainer set 슬롯 유지 배치  유지기의 유지수량/배치를 프로그램으로 수정
+  ae_maintainer diag             값/메서드 호출 진단 정보 출력 (문제 보고용)
   ae_maintainer help
 
 설정 파일: ./ae_maintainer.cfg (key=value, 예: interval=120 / takeover=false)
@@ -729,6 +734,53 @@ local function main(...)
     return
   end
   local mc, mcAddr, mcCount, mcKind = findController()
+
+  -- 진단: 값(userdata) 타입/메서드 호출이 되는지 확인 (문제 발생 시 이 출력을 보내주세요)
+  if cmd == "diag" then
+    print(string.format("ae_maintainer v%s 진단", VERSION))
+    print(string.format("level_maintainer : %s (총 %d개)", tostring(lmAddr), tonumber(lmCount) or 0))
+    print(string.format("ME 컴포넌트      : %s (%s)", tostring(mcKind or "없음"), tostring(mcAddr)))
+    print(string.format("모듈             : component=%s computer=%s term=%s",
+      tostring(component ~= nil), tostring(computer ~= nil), tostring(term ~= nil)))
+    local s = readSlot(lm, 1)
+    if not s then
+      print("슬롯1            : 비어 있음")
+    else
+      print(string.format("슬롯1            : %s / 유지 %s / 배치 %s / enable=%s / isDone=%s",
+        tostring(s.label), comma(s.quantity), comma(s.batch), tostring(s.isEnable), tostring(s.isDone)))
+    end
+    if mc and s then
+      local c
+      local okc, list = pcall(mc.getCraftables, { name = s.name, damage = s.damage })
+      if okc and type(list) == "table" then c = list[1] end
+      local how = "name 필터"
+      if not c then
+        local ok2, all = pcall(mc.getCraftables)
+        if ok2 and type(all) == "table" then c = all[1]; how = "전체 목록" end
+      end
+      if c then
+        print(string.format("레시피 값(%s)  : type=%s / .request=%s / .getStack=%s",
+          how, type(c), type(c.request), type(c.getStack)))
+        local ok4, st = callValue(c, "getStack")
+        print(string.format("getStack() 호출  : %s%s", tostring(ok4),
+          ok4 and (" → " .. type(st)) or (" 실패: " .. tostring(st))))
+      else
+        print("레시피 값        : 없음(필터 결과 0)")
+      end
+      local ok5, cpus = pcall(mc.getCpus)
+      print(string.format("CPU 목록         : ok=%s type=%s count=%s", tostring(ok5), type(cpus),
+        (type(cpus) == "table") and tostring(#cpus) or "?"))
+      if type(cpus) == "table" and cpus[1] then
+        local cpu = cpus[1]
+        print(string.format("CPU[1]           : type=%s / .isBusy=%s / .finalOutput=%s / .cancel=%s",
+          type(cpu), type(cpu.isBusy), type(cpu.finalOutput), type(cpu.cancel)))
+        local ok6, busy = callValue(cpu, "isBusy")
+        print(string.format("isBusy() 호출    : %s%s", tostring(ok6),
+          ok6 and (" → " .. tostring(busy)) or (" 실패: " .. tostring(busy))))
+      end
+    end
+    return
+  end
 
   if cmd == "set" then
     local slot = tonumber(argv[2])

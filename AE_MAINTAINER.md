@@ -119,6 +119,26 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 > v1.2 는 `finalOutput()` 을 슬롯 품목과 비교해 "이미 제작 중"을 판단하고, 타임아웃 시 그 CPU 를 `cancel()` 합니다.
 > 주의: 취소는 **그 품목을 제작 중인 CPU 의 작업**을 끊습니다. 같은 CPU 작업에 다른 산출물이 함께 있다면 같이 중단될 수 있습니다.
 
+### 값(userdata) 메서드 호출 규약 (v1.4에서 수정한 핵심)
+
+OC 커널 `assets/opencomputers/lua/machine.lua` 실측:
+
+```lua
+local proxy = {type = "userdata"}
+for method in pairs(spcall(userdata.methods, data)) do
+  proxy[method] = setmetatable({name=method, proxy=proxy}, userdataCallback)  -- __call 을 가진 '테이블'
+end
+return setmetatable(proxy, userdataWrapper)
+```
+
+- **값(Craftable/CPU/CraftingStatus 등)은 프록시 테이블**이고 `type(...) == "table"` 입니다.
+- 그 **메서드는 함수가 아니라 호출 가능한 테이블**(`__call` 메타메서드 보유)입니다.
+  → `type(craftable.request)` 는 `"function"` 이 아니라 `"table"` 입니다.
+- 호출은 **점 호출 + self 자동 주입**: `craftable.request(수량)` (내부적으로 프록시가 첫 인자로 전달됨)
+
+> 그래서 "`type(fn)=="function"` 인지 검사"하는 코드는 값 메서드에서 실패합니다. v1.4는 타입을 따지지 않고
+> 그대로 호출합니다. (`ae_maintainer diag` 로 실제 타입을 확인할 수 있습니다.)
+
 
 ---
 
@@ -172,6 +192,7 @@ wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintain
 | `ae_maintainer drive 30` | 30초 주기로 직접 요청 |
 | `ae_maintainer once` | 1회만 계산해서 표시 (설정 변경 없음) |
 | `ae_maintainer set 1 4096 512` | 1번 슬롯: 유지 4096, 1회 제작 512 로 변경 |
+| `ae_maintainer diag` | 값/메서드 호출 **진단 정보** 출력 (문제 발생 시 이 출력을 보내주세요) |
 | `ae_maintainer help` | 도움말 |
 
 설정 파일(선택): 프로그램과 같은 폴더에 `ae_maintainer.cfg` 를 두면 값이 덮어써집니다.
@@ -227,7 +248,7 @@ dryRun=false
 ## 7. 검증 결과 (실제 실행)
 
 `tests/oc_mock_test.lua` 하네스로 OC 런타임을 흉내 내어 실제 실행했습니다(문법 검사 포함, Lua 5.3).
-실행 방법: `aetest once` / `aetest drive 5` / `STRICT=1 aetest drive 5`
+실행 방법: `aetest once` / `aetest drive 5` / `aetest diag`
 
 | 테스트 | 결과 |
 |---|---|
@@ -237,8 +258,10 @@ dryRun=false
 | **`CPU_BUSY_MATCH=1 drive 30`** | 슬롯1은 `AE 제작 중(중복 요청 안 함)` 으로 건너뛰고, 슬롯2만 `request(16000)` 실행 (중복 방지 확인) |
 | **타임아웃** `requestTimeout=3` | 3초 경과 시 로그 `슬롯 1: 3초 동안 완료되지 않아 요청을 중단했습니다 (AE CPU 작업 취소됨)` + mock `CPU cancel()` 호출 확인. 카운트다운은 60→59→58초로 실시간 갱신 |
 | `COMPONENT_SET=interface` + drive | `me_interface` 로 인식해 동일하게 요청/원상복구 |
-| `STRICT=1 COMPONENT_SET=interface` | 동일하게 정상 (userdata 호출 규약 2종 모두 대응) |
 | `COMPONENT_SET=none` | 크래시 없이 `ME 조회 불가(me_controller/me_interface 없음)` |
+| **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
+| **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
+| **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
 | `set 2 250000 32000` / `help` | `setSlot(2, …)` 반환 `true` / 도움말 정상 |
 | **v1.3 cfg 자동 생성** | 빈 폴더에서 실행 → `설정 파일 ae_maintainer.cfg 가 없어 기본값으로 만들었습니다` 로그 + 14개 키가 든 파일 생성 확인 |
 | **v1.3 `ae_maintainer_setup.lua`** (mock) | 1회차 프로그램+cfg 설치(원본과 sha256 일치), 2회차 cfg `건너뜀(이미 있음)`, 3회차 `--force` 로 둘 다 갱신 |
@@ -277,11 +300,16 @@ dryRun=false
 | `레시피 없음(Not Found)` | AE2 패턴 미등록 / CPU·재료 부족 |
 | `슬롯 N: 60초 동안 완료되지 않아 요청을 중단했습니다 (해당 CPU를 못 찾아 취소 못 함…)` | 그 품목을 제작 중인 CPU 를 찾지 못한 경우입니다(AE 크래프팅 상태 GUI에서 직접 취소 가능). 재요청을 잠시 막고 싶으면 `timeoutCooldown` 값을 주세요 |
 | `AE 제작 중(중복 요청 안 함)` 이 계속 뜸 | 의도된 동작입니다. 다른 품목까지 걸러지면 `scanActiveItems=true` 를 끄거나 `skipIfCrafting=false` 로 두세요 |
+| `요청 실패: request 호출 실패(table)` | **v1.3 이하 버그**(v1.4에서 수정). OC는 값의 메서드를 "호출 가능한 테이블"로 노출하는데, v1.3 이하는 함수인지 검사해 거부했습니다. v1.4로 갱신하세요 |
+| 설치 중 `attempt to call a table value (field 'close')` | **setup v1.1 이하 버그**(v1.2에서 수정). `handle.close()` 는 이 환경에서 호출 불가이며 호출할 필요도 없습니다(EOF에서 자동 종료) |
+| 원인 파악이 안 됨 | `ae_maintainer diag` 를 실행해 출력을 그대로 보내주세요 |
 
 ## 11. 변경 이력
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.4 | 2026-09-26 | **긴급 수정(게임 내 요청 실패)**: OC 값(userdata)의 메서드는 함수가 아니라 **호출 가능한 테이블**로 노출되는데(v1.3 이하는 `type(fn)=="function"` 검사로 거부 → `요청 실패: request 메서드 없음`), 타입을 따지지 않고 호출하도록 변경. `getStack`/`isBusy`/`cancel` 등 모든 값 메서드에 적용. **`ae_maintainer diag`** 진단 명령 추가. 하네스를 실제와 동일하게(프록시 테이블) 개선해 회귀 방지 |
+| setup v1.2 | 2026-09-26 | **설치 실패 수정**: `handle.close()` 호출 제거(이 환경은 연쇄 `__call` 미지원 → `attempt to call a table value (field 'close')`). OpenOS `wget` 과 같이 이터레이터로 읽고 EOF 에서 자동 종료 |
 | v1.3.1 | 2026-09-26 | **설치 스크립트 이름 변경**: `install.lua` → **`ae_maintainer_setup.lua`**. OpenOS 내장 `install`(`/bin/install.lua`, OS 디스크 설치)과 이름이 겹쳐 PATH 상 내장 명령이 먼저 실행되는 문제 수정(스크립트 VERSION 1.1). 검증 하네스도 `tests/oc_mock_setup.lua` 로 변경 |
 | v1.3 | 2026-09-26 | **설정 파일 동봉**: `ae_maintainer.cfg` 를 저장소에 포함해 인게임에서 그대로 내려받을 수 있게 함. **cfg 자동 생성**(없으면 첫 실행 때 기본값으로 생성). **`install.lua`** 추가(프로그램+설정을 한 줄로 설치, 수정한 cfg 는 보존, `--force` 지원). 검증 하네스에 설치 스크립트 테스트 추가 |
 | v1.2 | 2026-09-26 | **중복 요청 방지 강화**: AE CPU 가 같은 품목을 제작 중이면(`getCpus().finalOutput` 비교) 요청하지 않고, 유지기 자체 작업 중인 슬롯도 건너뜀. **응답 없는 요청 자동 중단**: `requestTimeout`(기본 60초) 초과 시 요청 중단 + 그 CPU 작업 `cancel()`. 화면에 **다음 주기까지 남은 시간/진행 경과를 1초마다** 표시 |
