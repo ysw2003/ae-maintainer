@@ -32,13 +32,16 @@ ae_maintainer drive 60    -- 60초 주기로 직접 요청
 ## 2. 게임 내 배치
 
 ```
-[어댑터] ← ME Level Maintainer   → 컴포넌트 level_maintainer (설정/수량 읽기)
+[어댑터] ← ME Level Maintainer   → 컴포넌트 level_maintainer (설정/수량 읽기)  [필수]
 [어댑터] ← ME Controller         → 컴포넌트 me_controller   (보관량 조회 + 요청)
+   또는
+[어댑터] ← ME Interface          → 컴포넌트 me_interface    (동일 기능, 대체 가능)
 [어댑터] ← 화면(선택)            → 상태 표시
 어댑터는 컴퓨터/케이블에 연결, 각 블록은 ME 네트워크에 연결
 ```
 
-`component.list("level_maintainer")` 로 잡히는지 먼저 확인하세요.
+- `component.list("level_maintainer")`, `component.list("me_interface")` 로 잡히는지 먼저 확인하세요.
+- ME Controller 가 없어도 **ME Interface 를 붙이면 됩니다**(두 드라이버가 같은 네트워크 API를 제공).
 
 ## 3. 사용법
 
@@ -82,7 +85,17 @@ lua5.3 tests/oc_mock_test.lua drive 5       # 요청 + 원상복구 경로
 STRICT=1 lua5.3 tests/oc_mock_test.lua drive 5   # userdata 호출 규약 변형
 ```
 
-## 5. 주의사항
+## 5. 문제 해결
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| `attempt to index a nil value (global 'component')` 로 즉시 종료 | **v1.0 버그**(v1.1에서 수정). OpenOS는 `component`/`computer`/`term` 을 전역으로 주지 않고 모듈로만 줍니다. 아래 명령으로 **v1.1 이상을 다시 받으세요**: `wget -f <raw URL> /home/ae_maintainer.lua` |
+| 슬롯마다 `ME 조회 불가(me_controller/me_interface 없음)` | 어댑터를 **ME Controller 또는 ME Interface** 블록에 붙이세요 |
+| 슬롯이 모두 `(빈 슬롯)` | 유지기 GUI에서 슬롯에 품목이 등록됐는지 확인 |
+| `레시피 없음(Not Found)` | 해당 품목의 AE2 패턴이 없거나, CPU/재료 부족 |
+| `wget: This program requires an internet card to run.` | 컴퓨터에 **인터넷 카드**를 꽂으세요 |
+
+## 6. 주의사항
 
 - **컴퓨터가 꺼져 있으면 아무 것도 유지되지 않습니다.** `takeover=true` 는 유지기 자체 기능을 끄므로,
   끄기 전에 `Ctrl+C` 로 종료(자동 복구)하는 편이 안전합니다.

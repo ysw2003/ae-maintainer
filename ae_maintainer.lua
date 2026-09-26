@@ -13,7 +13,8 @@
 --
 -- 필요한 장비
 --   1) 어댑터 + ME Level Maintainer 블록  -> 컴포넌트 "level_maintainer" (필수)
---   2) 어댑터 + ME Controller 블록        -> 컴포넌트 "me_controller"    (drive 모드)
+--   2) 어댑터 + ME Controller 블록        -> 컴포넌트 "me_controller"    (보관량 조회/요청)
+--      (ME Controller 대신 **ME Interface** 를 붙여도 됩니다 -> "me_interface")
 --   3) 어댑터 + 화면(선택)                -> 상태 표시
 --
 -- 사용법 (OC 컴퓨터에서)
@@ -29,7 +30,7 @@
 --       컴퓨터를 끄기 전에 ae_maintainer 를 먼저 종료(복원)하는 편이 안전하다.
 --------------------------------------------------------------------------------
 
-local VERSION = "1.0"
+local VERSION = "1.1"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -49,6 +50,24 @@ local CONFIG = {
 --        interval=120
 --        takeover=true
 local CONFIG_FILE = "ae_maintainer.cfg"
+
+-- ======================= OC API 로딩 (전역이 아님!) ==========================
+-- OpenOS 는 `component` / `computer` / `term` 을 **전역(global)으로 노출하지 않습니다.**
+-- (실측: OC jar 의 boot/04_component.lua 1~2행이 `local component = require("component")`
+--  처럼 모듈로 받아 씁니다.)
+-- 전역을 쓰면 게임에서 즉시:
+--   attempt to index a nil value (global 'component')
+-- 으로 죽습니다. (v1.0 에서 실제 발생한 오류)
+local component, computer, term = nil, nil, nil
+do
+  local okc, c = pcall(require, "component")
+  if okc and type(c) == "table" then component = c end
+  local okp, p = pcall(require, "computer")
+  if okp and type(p) == "table" then computer = p end
+  local okt, t = pcall(require, "term")
+  if okt and type(t) == "table" then term = t end
+end
+
 -- ============================== 공용 유틸 ====================================
 local function nowStamp()
   local ok, t = pcall(os.time)
@@ -56,8 +75,11 @@ local function nowStamp()
     local ok2, s = pcall(os.date, "%H:%M:%S", t)
     if ok2 and type(s) == "string" then return s end
   end
-  local ok3, u = pcall(function() return computer.uptime() end)
-  return string.format("t+%s", ok3 and math.floor(u) or "?")
+  if computer then
+    local ok3, u = pcall(computer.uptime)
+    if ok3 and type(u) == "number" then return string.format("t+%d", math.floor(u)) end
+  end
+  return "t+?"
 end
 
 local function log(fmt, ...)
@@ -144,14 +166,23 @@ local function findMaintainer()
   return proxy(addrs[1]), addrs[1], #addrs
 end
 
+-- ME 네트워크 접근 컴포넌트: ME Controller(me_controller) 또는 ME Interface(me_interface)
+--   실측: OC jar 의 두 드라이버 모두 NetworkControl 을 구현 →
+--         getItemsInNetwork / getFluidsInNetwork / getCraftables / store 등 동일 API 제공
+local NET_COMPONENTS = { "me_controller", "me_interface" }
+
 local function findController()
   if CONFIG.controllerAddress then
     local p = proxy(CONFIG.controllerAddress)
-    if p then return p, CONFIG.controllerAddress, 1 end
+    if p then return p, CONFIG.controllerAddress, 1, "지정된 컴포넌트" end
   end
-  local addrs = listOf("me_controller")
-  if #addrs == 0 then return nil, nil, 0 end
-  return proxy(addrs[1]), addrs[1], #addrs
+  for _, name in ipairs(NET_COMPONENTS) do
+    local addrs = listOf(name)
+    if #addrs > 0 then
+      return proxy(addrs[1]), addrs[1], #addrs, name
+    end
+  end
+  return nil, nil, 0, nil
 end
 
 -- 슬롯 1개 읽기. 비어 있으면 nil.
@@ -372,7 +403,7 @@ local function runCycle(ctx)
     else
       local head = slotLine(s)
       if mc == nil then
-        out[#out + 1] = head .. "  ME 조회 불가(me_controller 없음)"
+        out[#out + 1] = head .. "  ME 조회 불가(me_controller/me_interface 없음)"
       else
         local stored, how = storedAmount(mc, s)
         if stored == nil then
@@ -415,14 +446,14 @@ end
 
 -- ============================== 5) 화면 출력 ================================
 local hasScreen = false
-do
+if component then
   local ok, gpu = pcall(component.isAvailable, "gpu")
   local ok2, scr = pcall(component.isAvailable, "screen")
   hasScreen = (ok and gpu and ok2 and scr) and true or false
 end
 
 local function render(header, lines, footer)
-  if hasScreen and type(term) == "table" then
+  if hasScreen and term then
     pcall(term.clear)
     pcall(term.setCursorPos, 1, 1)
   end
@@ -449,6 +480,7 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer)
 필요 컴포넌트
   - 어댑터 + ME Level Maintainer : level_maintainer  (설정/수량 읽기)
   - 어댑터 + ME Controller       : me_controller    (보관량 조회 + 크래프트 요청)
+    (ME Controller 대신 ME Interface 를 붙여도 됩니다 -> me_interface)
 ]]
 
 local function headerText(ctx)
@@ -483,6 +515,11 @@ local function main(...)
     return
   end
 
+  if not component then
+    print("component 모듈을 불러오지 못했습니다. OpenOS 컴퓨터에서 실행해 주세요.")
+    return
+  end
+
   local lm, lmAddr, lmCount = findMaintainer()
   if not lm then
     print("ME Level Maintainer(level_maintainer) 컴포넌트를 찾지 못했습니다.")
@@ -490,7 +527,7 @@ local function main(...)
     print(" - 유지기 자체도 ME 네트워크에 연결되어 있어야 합니다.")
     return
   end
-  local mc, mcAddr, mcCount = findController()
+  local mc, mcAddr, mcCount, mcKind = findController()
 
   if cmd == "set" then
     local slot = tonumber(argv[2])
@@ -535,11 +572,13 @@ local function main(...)
     log("유지기가 %d대 감지되어 첫 번째(%s)를 사용합니다. maintainerAddress 로 지정할 수 있습니다.",
       lmCount, tostring(lmAddr))
   end
-  if mcCount and mcCount > 1 then
-    log("ME Controller 가 %d대 감지되어 첫 번째(%s)를 사용합니다.", mcCount, tostring(mcAddr))
+  if mc then
+    log("ME 네트워크 컴포넌트: %s (%s)", tostring(mcKind), tostring(mcAddr))
+  else
+    log("ME 네트워크 컴포넌트가 없습니다: 어댑터를 ME Controller 또는 ME Interface 에 붙이세요. (지금은 읽기만 가능)")
   end
-  if not mc then
-    log("me_controller 컴포넌트가 없습니다: 보관량 조회/요청이 불가해 읽기만 표시합니다.")
+  if mcCount and mcCount > 1 then
+    log("같은 종류의 컴포넌트가 %d대 감지되어 첫 번째(%s)를 사용합니다.", mcCount, tostring(mcAddr))
   end
 
   local ok, err = pcall(mainLoop, ctx)

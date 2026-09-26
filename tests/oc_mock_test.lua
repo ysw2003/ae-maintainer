@@ -10,6 +10,10 @@
 --   환경변수
 --     TARGET=/경로/ae_maintainer.lua   검사 대상 변경 (기본: ../ae_maintainer.lua 위치)
 --     STRICT=1                          userdata 메서드를 self 없이 부르는 규약으로 흉내
+--     COMPONENT_SET=controller|interface|none   네트워크 컴포넌트 구성 (기본 controller)
+--
+--   주의: 실제 OpenOS 처럼 component/computer/term 을 **전역으로 만들지 않는다.**
+--         (모듈 require 로만 제공) → 프로그램이 전역을 쓰면 즉시 실패한다.
 --------------------------------------------------------------------------------
 local STRICT = os.getenv("STRICT") == "1"
 -- 대상 프로그램은 이 하네스 기준 ../ae_maintainer.lua (TARGET 환경변수로 변경 가능)
@@ -89,13 +93,21 @@ function lmObj.isDone(i) return true end
 function lmObj.isEnable(i) return true end
 function lmObj.active() return true end
 
--- ---- OC 런타임 흉내 ----
+-- ---- OC 런타임 흉내 (실제 OpenOS와 동일: 전역이 아니라 '모듈'로 제공) ----
+-- 컴포넌트 구성: COMPONENT_SET=controller(기본) | interface | none
+local COMPONENT_SET = os.getenv("COMPONENT_SET") or "controller"
+
 local comps = {
   ["aaaa-1111"] = { t = "level_maintainer", o = lmObj },
-  ["bbbb-2222"] = { t = "me_controller",    o = mcObj },
 }
-component = {
-  isAvailable = function(n) return n == "screen" or n == "gpu" end,
+if COMPONENT_SET == "controller" then
+  comps["bbbb-2222"] = { t = "me_controller", o = mcObj }
+elseif COMPONENT_SET == "interface" then
+  comps["cccc-3333"] = { t = "me_interface", o = mcObj }
+end
+
+local componentModule = {
+  isAvailable = function(n) return n == "screen" or n == "gpu" or n == "internet" end,
   list = function(filter, exact)
     local out = {}
     for a, c in pairs(comps) do
@@ -107,8 +119,23 @@ component = {
   end,
   proxy = function(a) return comps[a] and comps[a].o or nil end,
 }
-computer = { uptime = function() return 42 end }
-term = { clear = function() end, setCursorPos = function() end }
+
+package.preload["component"] = function() return componentModule end
+package.preload["computer"] = function() return { uptime = function() return 42 end } end
+package.preload["term"] = function()
+  return { clear = function() end, setCursorPos = function() end }
+end
+
+-- 회귀 방지: OpenOS에 없는 전역(component/computer/term)을 쓰면 즉시 실패시킨다.
+-- (v1.0 이 이 실수를 해서 게임에서 죽었다)
+setmetatable(_G, {
+  __index = function(_, k)
+    if k == "component" or k == "computer" or k == "term" or k == "unicode" then
+      error("OpenOS에 없는 전역 '" .. tostring(k) .. "' 사용 (require 로 받아야 함)", 2)
+    end
+    return nil
+  end,
+})
 
 -- os.sleep: 2번째 호출에서 인터럽트(에러)를 던져 루프 종료/복구 경로까지 검증
 local sleeps = 0

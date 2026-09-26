@@ -79,7 +79,11 @@
   quantity = 100000, batch = 16000, isEnable = true, isDone = true, ... }
 ```
 
-### `me_controller` — ME Controller (OpenComputers의 AE2 통합)
+### `me_controller` / `me_interface` — ME 네트워크 접근 (OC의 AE2 통합)
+
+ME Controller 블록은 `me_controller`, ME Interface 블록은 `me_interface` 컴포넌트가 됩니다.
+**두 드라이버 모두 OC의 `NetworkControl` 을 구현**하므로 아래 메서드를 동일하게 제공합니다(실측: `DriverController$Environment`, `DriverBlockInterface$Environment` 모두
+`implements NetworkControl<TileEntity>`). 프로그램은 `me_controller` → `me_interface` 순으로 먼저 잡히는 것을 사용합니다.
 
 | 메서드 | 설명 |
 |---|---|
@@ -102,7 +106,8 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 
 ```
 [어댑터]  ← (6면 중 아무 면) ← ME Level Maintainer   → 필요: level_maintainer
-[어댑터]  ←                 ← ME Controller         → 필요: me_controller (drive 모드)
+[어댑터]  ←                 ← ME Controller         → 필요: me_controller
+[어댑터]  ←                 ← ME Interface(대체 가능) → 필요: me_interface
 [어댑터]  ←                 ← 화면(선택)            → 출력
 어댑터와 컴퓨터/케이블을 연결 (어댑터 = 컴퓨터에 붙이는 '부품 상자' 블록)
 ```
@@ -202,4 +207,20 @@ dryRun=false
 | 유지기 슬롯 enable | 프로그램이 종료 시 자동 복구. 강제 종료했다면 게임에서 슬롯을 다시 켜거나 `ae_maintainer` 실행 → Ctrl+C |
 | 이 문서/파일(서버) | `rm -r /home/ubuntu/github/ae-maintainer` (폴더째 삭제) |
 | Lua 인터프리터(검증용 설치) | `sudo apt-get remove -y lua5.3 lua5.3-dev` |
+
+## 10. 문제 해결
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| `attempt to index a nil value (global 'component')` 로 즉시 종료 | **v1.0 버그**. OpenOS는 `component`/`computer`/`term` 을 **전역으로 제공하지 않습니다**(OC jar `boot/04_component.lua` 1~2행이 `require` 로 받아 로컬에서 사용). v1.1은 `local component = require("component")` 방식으로 수정. `wget -f` 로 다시 받으세요 |
+| `ME 조회 불가(me_controller/me_interface 없음)` | 어댑터를 ME Controller 또는 ME Interface 에 붙이세요 |
+| 유지기 자체가 안 움직임 | `takeover=true` 이면 의도된 동작(OC 단독 관리). OC를 종료하면 자동 복구 |
+| `레시피 없음(Not Found)` | AE2 패턴 미등록 / CPU·재료 부족 |
+
+## 11. 변경 이력
+
+| 버전 | 날짜 | 내용 |
+|---|---|---|
+| v1.1 | 2026-09-26 | **긴급 수정**: `component`/`computer`/`term` 을 전역 대신 `require` 로 받도록 변경(게임 내 즉시 크래시 원인). 네트워크 컴포넌트로 **`me_interface` 도 지원**(`me_controller` 우선). 검증 하네스가 실제 OpenOS처럼 전역을 금지하도록 개선(회귀 방지) |
+| v1.0 | 2026-09-26 | 최초 공개: 유지기 슬롯 5개 읽기, 주기별 요청, takeover/원상복구, monitor/once/set 모드 |
 

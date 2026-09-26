@@ -11,6 +11,10 @@ Thumbs.db
 
 # 로그
 *.log
+
+# 사용자 스크린샷은 저장소에 포함하지 않음
+tests/*.png
+*.png
 credentials/
 secrets/
 .env
