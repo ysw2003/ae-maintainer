@@ -23,11 +23,13 @@ OC 컴퓨터에 **인터넷 카드(Internet Card)** 를 넣은 상태에서 아�
 ### 방법 A — 설치 스크립트로 한 번에 (프로그램 + 설정)
 
 ```lua
-wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/install.lua /home/install.lua && install
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer_setup.lua /home/ae_maintainer_setup.lua && ae_maintainer_setup
 ```
 
 - `ae_maintainer.lua` 와 `ae_maintainer.cfg` 를 `/home` 에 함께 설치합니다.
-- **이미 수정한 설정(cfg)은 건드리지 않습니다.** 최신 기본값으로 덮어쓰려면 `install --force`.
+- **이미 수정한 설정(cfg)은 건드리지 않습니다.** 최신 기본값으로 덮어쓰려면 `ae_maintainer_setup --force`.
+- ⚠️ 이름이 `install` 이 아닌 이유: OpenOS 에는 **내장 `install` 명령**(`/bin/install.lua` — OS 디스크 설치)이 있고,
+  PATH 순서가 `/bin:/usr/bin:/home/bin:.` 이라 `install` 로 실행하면 **OpenOS 설치 프로그램이 실행**됩니다.
 
 ### 방법 B — 파일 직접 받기
 
@@ -110,10 +112,10 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 ```
 ae_maintainer.lua            프로그램 본체 (OC 컴퓨터에 넣는 파일)
 ae_maintainer.cfg            기본 설정 (인게임에서 그대로 내려받아 사용 / 수정해서 씀)
-install.lua                  OC용 설치 스크립트 (프로그램 + 설정 한 번에 내려받기)
+ae_maintainer_setup.lua      OC용 설치 스크립트 (프로그램 + 설정 한 번에 내려받기)
 AE_MAINTAINER.md             상세 문서 (컴포넌트 API 표 · 검증 근거 · 주의사항 · 되돌리기)
 tests/oc_mock_test.lua       프로그램 검증 하네스 (OC 없이 실행)
-tests/oc_mock_install.lua    install.lua 검증 하네스
+tests/oc_mock_setup.lua      설치 스크립트 검증 하네스
 ```
 
 검증 하네스 (Lua 5.3 설치된 PC에서):
@@ -122,7 +124,7 @@ lua5.3 tests/oc_mock_test.lua once               # 읽기 경로
 lua5.3 tests/oc_mock_test.lua drive 5            # 요청 + 카운트다운 + 원상복구
 CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
 CFG_EXTRA=$'requestTimeout=3' MAX_SLEEPS=8 lua5.3 tests/oc_mock_test.lua drive   # 타임아웃+CPU 취소
-TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_install.lua     # 설치 스크립트
+TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크립트
 ```
 
 ## 5. 문제 해결
@@ -134,6 +136,7 @@ TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_install.lua     # 설치 스크�
 | 슬롯이 모두 `(빈 슬롯)` | 유지기 GUI에서 슬롯에 품목이 등록됐는지 확인 |
 | `레시피 없음(Not Found)` | 해당 품목의 AE2 패턴이 없거나, CPU/재료 부족 |
 | `wget: This program requires an internet card to run.` | 컴퓨터에 **인터넷 카드**를 꽂으세요 |
+| `install` 을 입력했더니 OS 설치(디스크 선택) 화면이 나옴 | OpenOS **내장 명령**입니다. 이 프로젝트는 `ae_maintainer_setup` 을 사용하세요(이름이 겹치지 않게 바꿨습니다) |
 
 ## 6. 주의사항
 

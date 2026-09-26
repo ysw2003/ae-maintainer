@@ -1,17 +1,23 @@
 --------------------------------------------------------------------------------
--- install.lua v1.0 — OpenComputers 컴퓨터용 설치 도우미
+-- ae_maintainer_setup.lua v1.1 — OpenComputers 컴퓨터용 설치 도우미
 --
 --   ae_maintainer.lua (프로그램) 과 ae_maintainer.cfg (기본 설정) 을 함께 내려받습니다.
 --
+-- 이름 주의
+--   OpenOS 에는 **내장 `install` 명령**(/bin/install.lua = OS 디스크 설치)이 있습니다.
+--   PATH 순서가 /bin:/usr/bin:/home/bin:. 이라 `install` 로 실행하면 OpenOS 설치 프로그램이
+--   먼저 잡히므로, 이 파일은 충돌을 피해 ae_maintainer_setup.lua 입니다.
+--
 -- 사용법 (인게임, 인터넷 카드 필요)
---   wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/install.lua /home/install.lua && install
---   install [대상폴더] [--force]     --force = 기존 ae_maintainer.cfg 도 덮어씀
+--   wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer_setup.lua /home/ae_maintainer_setup.lua && ae_maintainer_setup
+--   ae_maintainer_setup [대상폴더] [--force]     --force = 기존 ae_maintainer.cfg 도 덮어씀
 --
 --   동작
 --     · ae_maintainer.lua 는 항상 최신으로 덮어씁니다.
 --     · ae_maintainer.cfg 는 없을 때만 만듭니다(수정한 설정 보호). --force 로 강제 갱신.
 --------------------------------------------------------------------------------
-local VERSION = "1.0"
+local VERSION = "1.1"
+local SELF = "ae_maintainer_setup"
 local BASE = "https://raw.githubusercontent.com/ysw2003/ae-maintainer/main"
 local FILES = {
   { name = "ae_maintainer.lua", overwrite = true,  desc = "프로그램" },
@@ -19,7 +25,7 @@ local FILES = {
 }
 
 local function fail(msg)
-  io.stderr:write("install: " .. tostring(msg) .. "\n")
+  io.stderr:write(SELF .. ": " .. tostring(msg) .. "\n")
   return 1
 end
 
@@ -45,7 +51,7 @@ for _, a in ipairs({ ... }) do
   if a == "--force" or a == "-f" then
     force = true
   elseif a == "-h" or a == "--help" then
-    print("사용법: install [대상폴더] [--force]   (기본 대상폴더 /home)")
+    print("사용법: " .. SELF .. " [대상폴더] [--force]   (기본 대상폴더 /home)")
     return 0
   else
     dir = a
@@ -74,7 +80,7 @@ local function save(path, data)
 end
 
 -- ---- 실행 -------------------------------------------------------------------
-print("install v" .. VERSION .. "  → 대상 폴더: " .. dir)
+print(SELF .. " v" .. VERSION .. "  → 대상 폴더: " .. dir)
 local installed, skipped, failed = 0, 0, 0
 for _, item in ipairs(FILES) do
   local path = fs.concat(dir, item.name)

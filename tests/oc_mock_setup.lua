@@ -1,17 +1,17 @@
 --------------------------------------------------------------------------------
--- tests/oc_mock_install.lua — install.lua 를 OC 없이 검증하는 하네스
+-- tests/oc_mock_setup.lua — ae_maintainer_setup.lua 를 OC 없이 검증하는 하네스
 --
 --   · 인터넷/파일시스템을 흉내 내고, 실제 저장소 파일을 "다운로드"로 공급한다
 --   · 실제 OpenOS 처럼 component/filesystem/internet 을 전역이 아니라 모듈로만 제공
 --
 --   사용법
---     TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_install.lua
---     TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_install.lua --force
+--     TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua
+--     TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua --force
 --     REPO_DIR=/home/ubuntu/github/ae-maintainer TARGET_DIR=... lua5.3 ...
 --------------------------------------------------------------------------------
 local REPO = os.getenv("REPO_DIR") or "/home/ubuntu/github/ae-maintainer"
 local TARGET = os.getenv("TARGET_DIR") or "/tmp/ocinstall"
-local TARGET_SRC = os.getenv("TARGET_SRC") or (REPO .. "/install.lua")
+local TARGET_SRC = os.getenv("TARGET_SRC") or (REPO .. "/ae_maintainer_setup.lua")
 
 -- OpenOS 에 없는 전역 사용 금지 (회귀 방지)
 setmetatable(_G, {
@@ -75,7 +75,7 @@ package.preload["internet"] = function()
   }
 end
 
-io.write(string.format("### install 하네스: TARGET_DIR=%s REPO_DIR=%s\n", TARGET, REPO))
+io.write(string.format("### setup 하네스: TARGET_DIR=%s REPO_DIR=%s\n", TARGET, REPO))
 os.execute("mkdir -p '" .. TARGET .. "'")
 local chunk = assert(loadfile(TARGET_SRC))
 local runArgs = { TARGET, ... }          -- 대상폴더 + 하네스 인자(--force 등)

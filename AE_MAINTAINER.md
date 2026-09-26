@@ -7,11 +7,11 @@
 ~/github/ae-maintainer/            (GitHub: ysw2003/ae-maintainer)
 ├── ae_maintainer.lua              OC 컴퓨터에 넣을 프로그램 (본체)
 ├── ae_maintainer.cfg              기본 설정 (인게임에서 그대로 내려받아 수정해 사용)
-├── install.lua                    OC용 설치 스크립트 (프로그램 + 설정 함께 설치)
+├── ae_maintainer_setup.lua        OC용 설치 스크립트 (프로그램 + 설정 함께 설치)
 ├── AE_MAINTAINER.md               이 문서
 └── tests/
     ├── oc_mock_test.lua           프로그램 검증 하네스 (OC 없이 실행)
-    └── oc_mock_install.lua        install.lua 검증 하네스
+    └── oc_mock_setup.lua          설치 스크립트 검증 하네스
 ```
 
 검증: Lua 5.3 문법 검사 + 목(mock) 하네스 실행 검증. 하네스 실행 예: `aetest once` / `aetest drive 5`
@@ -139,11 +139,13 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 
 **방법 A — 설치 스크립트 (프로그램 + 설정 한 번에, 인터넷 카드 필요)**
 ```lua
-wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/install.lua /home/install.lua && install
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer_setup.lua /home/ae_maintainer_setup.lua && ae_maintainer_setup
 ```
 - `ae_maintainer.lua` 와 `ae_maintainer.cfg` 를 `/home` 에 설치합니다.
 - 수정한 cfg 는 보존(`--force` 로 강제 갱신).
 - OpenOS 셸은 `&&`/`;` 연결을 지원합니다(`lib/sh.lua` 실측 확인).
+- ⚠️ **`install` 이라는 이름은 쓰면 안 됩니다**: OpenOS 내장 명령(`/bin/install.lua` = OS 디스크 설치)이
+  PATH(`/bin:/usr/bin:/home/bin:.`)에서 먼저 잡혀 OpenOS 설치 화면이 뜹니다. 그래서 `ae_maintainer_setup` 입니다.
 
 **방법 B — 파일 직접 받기**
 ```lua
@@ -239,7 +241,7 @@ dryRun=false
 | `COMPONENT_SET=none` | 크래시 없이 `ME 조회 불가(me_controller/me_interface 없음)` |
 | `set 2 250000 32000` / `help` | `setSlot(2, …)` 반환 `true` / 도움말 정상 |
 | **v1.3 cfg 자동 생성** | 빈 폴더에서 실행 → `설정 파일 ae_maintainer.cfg 가 없어 기본값으로 만들었습니다` 로그 + 14개 키가 든 파일 생성 확인 |
-| **v1.3 `install.lua`** (mock) | 1회차 프로그램+cfg 설치(원본과 sha256 일치), 2회차 cfg `건너뜀(이미 있음)`, 3회차 `--force` 로 둘 다 갱신 |
+| **v1.3 `ae_maintainer_setup.lua`** (mock) | 1회차 프로그램+cfg 설치(원본과 sha256 일치), 2회차 cfg `건너뜀(이미 있음)`, 3회차 `--force` 로 둘 다 갱신 |
 
 ---
 
@@ -280,7 +282,8 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
-| v1.3 | 2026-09-26 | **설정 파일 동봉**: `ae_maintainer.cfg` 를 저장소에 포함해 인게임에서 그대로 내려받을 수 있게 함. **cfg 자동 생성**(없으면 첫 실행 때 기본값으로 생성). **`install.lua`** 추가(프로그램+설정을 한 줄로 설치, 수정한 cfg 는 보존, `--force` 지원). 검증 하네스에 install.lua 테스트 추가 |
+| v1.3.1 | 2026-09-26 | **설치 스크립트 이름 변경**: `install.lua` → **`ae_maintainer_setup.lua`**. OpenOS 내장 `install`(`/bin/install.lua`, OS 디스크 설치)과 이름이 겹쳐 PATH 상 내장 명령이 먼저 실행되는 문제 수정(스크립트 VERSION 1.1). 검증 하네스도 `tests/oc_mock_setup.lua` 로 변경 |
+| v1.3 | 2026-09-26 | **설정 파일 동봉**: `ae_maintainer.cfg` 를 저장소에 포함해 인게임에서 그대로 내려받을 수 있게 함. **cfg 자동 생성**(없으면 첫 실행 때 기본값으로 생성). **`install.lua`** 추가(프로그램+설정을 한 줄로 설치, 수정한 cfg 는 보존, `--force` 지원). 검증 하네스에 설치 스크립트 테스트 추가 |
 | v1.2 | 2026-09-26 | **중복 요청 방지 강화**: AE CPU 가 같은 품목을 제작 중이면(`getCpus().finalOutput` 비교) 요청하지 않고, 유지기 자체 작업 중인 슬롯도 건너뜀. **응답 없는 요청 자동 중단**: `requestTimeout`(기본 60초) 초과 시 요청 중단 + 그 CPU 작업 `cancel()`. 화면에 **다음 주기까지 남은 시간/진행 경과를 1초마다** 표시 |
 | v1.1 | 2026-09-26 | **긴급 수정**: `component`/`computer`/`term` 을 전역 대신 `require` 로 받도록 변경(게임 내 즉시 크래시 원인). 네트워크 컴포넌트로 **`me_interface` 도 지원**(`me_controller` 우선). 검증 하네스가 실제 OpenOS처럼 전역을 금지하도록 개선(회귀 방지) |
 | v1.0 | 2026-09-26 | 최초 공개: 유지기 슬롯 5개 읽기, 주기별 요청, takeover/원상복구, monitor/once/set 모드 |
