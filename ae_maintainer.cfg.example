@@ -28,6 +28,29 @@ labelFallback=true
 # 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구
 autoRestore=true
 
+# ---- v1.2 추가 --------------------------------------------------------------
+
+# AE CPU 가 같은 품목을 이미 제작 중이면 새 요청을 넣지 않음 (finalOutput 비교)
+skipIfCrafting=true
+
+# 유지기 자체가 그 슬롯을 작업 중(isDone=false)이면 건너뜀
+skipIfMaintainer=true
+
+# 위 판단에 activeItems/storedItems/pendingItems 까지 포함 (오탐 가능, 기본 꺼짐)
+scanActiveItems=false
+
+# 요청 후 이 초(기본 60) 안에 완료되지 않으면 요청을 중단하고 CPU 취소 시도 (0=끔)
+requestTimeout=60
+
+# 타임아웃 시 그 품목을 제작 중인 AE CPU 작업을 취소
+cancelOnTimeout=true
+
+# 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). 0=즉시 재시도 가능
+timeoutCooldown=0
+
+# 화면에 다음 주기까지 남은 시간을 1초마다 표시
+countdown=true
+
 # 유지기가 여러 대일 때 특정 어댑터 주소 지정 (비워두면 첫 번째 사용)
 # maintainerAddress=aaaa-1111-bbbb-2222
 

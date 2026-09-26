@@ -11,6 +11,9 @@
 --     TARGET=/경로/ae_maintainer.lua   검사 대상 변경 (기본: ../ae_maintainer.lua 위치)
 --     STRICT=1                          userdata 메서드를 self 없이 부르는 규약으로 흉내
 --     COMPONENT_SET=controller|interface|none   네트워크 컴포넌트 구성 (기본 controller)
+--     CPU_BUSY_MATCH=1                  처음부터 같은 품목을 제작 중인 CPU 가 있는 상황
+--     MAX_SLEEPS=N                      N초 후 인터럽트(mock Ctrl+C) 발생 (기본 2)
+--     CFG_EXTRA="k=v;k=v"               임시 ae_maintainer.cfg 를 만들어 설정 변경
 --
 --   주의: 실제 OpenOS 처럼 component/computer/term 을 **전역으로 만들지 않는다.**
 --         (모듈 require 로만 제공) → 프로그램이 전역을 쓰면 즉시 실패한다.
@@ -29,6 +32,10 @@ local function resolve(a, b)
   return nil, a
 end
 
+-- ---- Crafting CPU 상태 (craftable.request 가 busy 로 바꾼다) ----
+local cpuBusy = false
+local cpuCanceled = false
+
 -- ---- 상태 객체(CraftingStatus) 흉내 ----
 local status = { __ud = true }
 function status.isComputing(a, b) resolve(a, b); return true end
@@ -45,6 +52,7 @@ end
 function craftable.request(a, b)
   local _, amount = resolve(a, b)
   io.write(string.format("   >> (mock) request(%s) 호출됨\n", tostring(amount)))
+  cpuBusy = true          -- 요청하면 CPU 가 그 작업으로 바빠진다
   return status
 end
 
@@ -70,6 +78,29 @@ end
 function mcObj.getCraftables(filter)
   return { craftable }
 end
+
+-- ---- Crafting CPU 흉내 (getCpus) ----
+--   CPU_BUSY_MATCH=1 : 처음부터 slot1 품목을 제작 중인 CPU 가 있는 상황
+--   기본            : 요청(request) 후에 그 CPU 가 busy 가 되는 상황(타임아웃/취소 검증용)
+cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
+local cpuObj = { __ud = true }
+function cpuObj.isBusy(a, b)  resolve(a, b); return cpuBusy end
+function cpuObj.isActive(a, b) resolve(a, b); return cpuBusy end
+function cpuObj.finalOutput(a, b)
+  resolve(a, b)
+  if not cpuBusy then return nil end
+  return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
+end
+function cpuObj.activeItems(a, b)  resolve(a, b); return {} end
+function cpuObj.storedItems(a, b)  resolve(a, b); return {} end
+function cpuObj.pendingItems(a, b) resolve(a, b); return {} end
+function cpuObj.cancel(a, b)
+  resolve(a, b)
+  cpuCanceled = true
+  io.write("   >> (mock) CPU cancel() 호출됨\n")
+  return true
+end
+function mcObj.getCpus() return { cpuObj } end
 
 -- ---- level_maintainer 컴포넌트 흉내 ----
 local lmObj = {}
@@ -106,6 +137,7 @@ elseif COMPONENT_SET == "interface" then
   comps["cccc-3333"] = { t = "me_interface", o = mcObj }
 end
 
+local uptime = 0     -- os.sleep 이 진행시킨다 (타임아웃/경과시간 검증용)
 local componentModule = {
   isAvailable = function(n) return n == "screen" or n == "gpu" or n == "internet" end,
   list = function(filter, exact)
@@ -121,7 +153,9 @@ local componentModule = {
 }
 
 package.preload["component"] = function() return componentModule end
-package.preload["computer"] = function() return { uptime = function() return 42 end } end
+package.preload["computer"] = function()
+  return { uptime = function() return uptime end }
+end
 package.preload["term"] = function()
   return { clear = function() end, setCursorPos = function() end }
 end
@@ -137,14 +171,31 @@ setmetatable(_G, {
   end,
 })
 
--- os.sleep: 2번째 호출에서 인터럽트(에러)를 던져 루프 종료/복구 경로까지 검증
+-- os.sleep: uptime 을 실제처럼 진행시키고, MAX_SLEEPS 회 후 인터럽트(에러)를 던져
+--           루프 종료/원상복구 경로까지 검증한다.
 local sleeps = 0
-os.sleep = function()
+local MAX_SLEEPS = tonumber(os.getenv("MAX_SLEEPS") or "2")
+os.sleep = function(s)
+  uptime = uptime + (tonumber(s) or 0)
   sleeps = sleeps + 1
-  if sleeps >= 2 then error("interrupted (mock Ctrl+C)", 0) end
+  if sleeps >= MAX_SLEEPS then error("interrupted (mock Ctrl+C)", 0) end
 end
 
-io.write(string.format("### STRICT=%s  TARGET=%s\n", tostring(STRICT), TARGET))
+io.write(string.format("### STRICT=%s  COMPONENT_SET=%s  cpuBusy=%s  MAX_SLEEPS=%d\n",
+  tostring(STRICT), COMPONENT_SET, tostring(cpuBusy), MAX_SLEEPS))
+
+-- CFG_EXTRA 로 임시 설정 파일을 만들어 프로그램 설정을 바꿀 수 있다
+local cfgText = os.getenv("CFG_EXTRA")
+if cfgText and cfgText ~= "" then
+  local f = assert(io.open("ae_maintainer.cfg", "w"))
+  f:write(cfgText, "\n")
+  f:close()
+  io.write("### (mock) ae_maintainer.cfg 생성: " .. cfgText:gsub("\n", " ") .. "\n")
+end
+
 local chunk = assert(loadfile(TARGET))
-chunk(...)
-io.write("### (mock) 프로그램 종료\n")
+local ok, err = pcall(chunk, ...)
+os.remove("ae_maintainer.cfg")
+io.write(string.format("### (mock) 프로그램 종료 (cpuCanceled=%s, sleeps=%d)\n",
+  tostring(cpuCanceled), sleeps))
+if not ok then io.write("### (mock) 오류: " .. tostring(err) .. "\n") end

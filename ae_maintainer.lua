@@ -30,7 +30,7 @@
 --       컴퓨터를 끄기 전에 ae_maintainer 를 먼저 종료(복원)하는 편이 안전하다.
 --------------------------------------------------------------------------------
 
-local VERSION = "1.1"
+local VERSION = "1.2"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -43,6 +43,19 @@ local CONFIG = {
   autoRestore   = true,  -- 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구
   maintainerAddress = nil, -- 유지기가 여러 대일 때 어댑터 주소로 지정
   controllerAddress = nil, -- ME Controller 가 여러 대일 때 어댑터 주소로 지정
+
+  -- [v1.2] 중복 요청 방지
+  skipIfCrafting   = true,  -- AE CPU 가 같은 품목을 이미 제작 중이면 요청하지 않음(finalOutput 비교)
+  scanActiveItems  = false, -- 위 판단에 activeItems/storedItems/pendingItems 까지 포함(오탐 가능)
+  skipIfMaintainer = true,  -- 유지기 자체가 그 슬롯 작업 중(isDone=false)이면 요청하지 않음
+
+  -- [v1.2] 응답 없는 요청 자동 중단
+  requestTimeout  = 60,   -- 요청 후 이 초 안에 완료되지 않으면 중단(+AE CPU 취소 시도). 0=비활성
+  cancelOnTimeout = true, -- 타임아웃 시 해당 AE CPU 작업 취소 시도
+  timeoutCooldown = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
+
+  -- [v1.2] 화면
+  countdown = true,       -- 화면에 다음 주기까지 남은 시간을 1초마다 갱신
 }
 
 -- 선택: 같은 폴더에 ae_maintainer.cfg 가 있으면 위 값을 덮어쓴다.
@@ -104,6 +117,17 @@ local function comma(v)
   return (rev:gsub("^,", ""))
 end
 
+-- 경과 시간 측정용 (초). computer.uptime() 우선, 없으면 os.time()
+local function nowSeconds()
+  if computer then
+    local ok, u = pcall(computer.uptime)
+    if ok and type(u) == "number" then return u end
+  end
+  local ok2, t = pcall(os.time)
+  if ok2 and type(t) == "number" then return t end
+  return nil
+end
+
 -- 설정 파일(단순 key=value) 읽기. 코드 실행 없음.
 local function loadConfigFile(path)
   local f = io.open(path, "r")
@@ -151,7 +175,8 @@ end
 local SLOT_COUNT = 5          -- ae2fc TileLevelMaintainer.REQ_COUNT = 5 (슬롯 1~5)
 
 local state = {
-  pending = {},        -- [슬롯] = request() 가 돌려준 상태 userdata
+  pending = {},        -- [슬롯] = { status=, amount=, slot=, startedAt= }
+  cooldownUntil = {},  -- [슬롯] = 타임아웃 중단 후 재요청 가능 시각
   originalEnable = {}, -- [슬롯] = takeover 전 원래 enable 값
   tookOver = false,
 }
@@ -303,20 +328,22 @@ end
 
 -- 이 슬롯에 대해 프로그램이 넣은 요청이 아직 진행 중인가?
 local function jobBusy(i)
-  local st = state.pending[i]
-  if not st then return false end
-  local computing = callBool(st, "isComputing")
+  local p = state.pending[i]
+  if not p then return false end
+  local st = p.status
+  local computing = st and callBool(st, "isComputing")
   if computing == nil then
     state.pending[i] = nil
     return false
   end
   if computing then return true end
+  local elapsed = p.startedAt and nowSeconds() and (nowSeconds() - p.startedAt) or 0
   if callBool(st, "hasFailed") then
-    log("슬롯 %d: 이전 요청 실패", i)
+    log("슬롯 %d: 이전 요청 실패 (%.0f초)", i, elapsed)
   elseif callBool(st, "isCanceled") then
-    log("슬롯 %d: 이전 요청 취소됨", i)
+    log("슬롯 %d: 이전 요청 취소됨 (%.0f초)", i, elapsed)
   elseif callBool(st, "isDone") then
-    log("슬롯 %d: 이전 요청 완료", i)
+    log("슬롯 %d: 이전 요청 완료 (%.0f초)", i, elapsed)
   end
   state.pending[i] = nil
   return false
@@ -360,7 +387,7 @@ local function restoreAll(lm)
 end
 
 
--- =========================== 4) 한 주기 처리 =================================
+-- =================== 4) AE 제작 중 감지 / 타임아웃 처리 ======================
 -- 요청량 결정: need=부족분까지만, batch=batch 고정, fill=부족분을 batch 단위로 올림
 local function decideAmount(slot, deficit)
   local batch = slot.batch
@@ -379,7 +406,53 @@ local function shortText(s, n)
   return s:sub(1, n - 3) .. "..."
 end
 
-local function slotLine(s)
+-- AE 스택표(table)가 이 슬롯의 품목과 같은가
+local function stackMatches(slot, st)
+  if type(st) ~= "table" then return false end
+  if slot.isFluid then
+    if slot.fluidName and st.name == slot.fluidName then return true end
+    if CONFIG.labelFallback and slot.label and st.label == slot.label and st.amount ~= nil then
+      return true
+    end
+    return false
+  end
+  if slot.name and st.name == slot.name and toInt(st.damage) == slot.damage then return true end
+  if CONFIG.labelFallback and slot.label and st.label == slot.label
+     and toInt(st.damage) == slot.damage and st.size ~= nil then
+    return true
+  end
+  return false
+end
+
+-- 이 품목을 "이미 제작 중"인 CPU 를 찾는다 (없으면 nil)
+--   Cpu 콜백: isBusy/isActive, finalOutput, activeItems, storedItems, pendingItems, cancel
+--   force=true 이면 skipIfCrafting 설정과 무관하게 검사(타임아웃 취소용)
+local function findCraftingCpu(mc, slot, force)
+  if not mc then return nil end
+  if not (force or CONFIG.skipIfCrafting) then return nil end
+  local ok, cpus = pcall(mc.getCpus)
+  if not ok or type(cpus) ~= "table" then return nil end
+  for _, cpu in ipairs(cpus) do
+    if callBool(cpu, "isBusy") then
+      local okOut, final = callValue(cpu, "finalOutput")
+      if okOut and stackMatches(slot, final) then return cpu end
+      if CONFIG.scanActiveItems then
+        for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
+          local okL, list = callValue(cpu, meth)
+          if okL and type(list) == "table" then
+            for _, st in ipairs(list) do
+              if stackMatches(slot, st) then return cpu end
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- 슬롯 줄의 고정 부분
+local function slotHead(s)
   local kind = s.isFluid and "F" or "I"
   local id = s.isFluid and (s.fluidName or "?")
               or string.format("%s:%d", tostring(s.name or "?"), s.damage)
@@ -387,52 +460,116 @@ local function slotLine(s)
     s.index, kind, shortText(s.label or id, 26), comma(s.quantity), comma(s.batch))
 end
 
--- ctx = { lm=, lmAddr=, mc=, mcAddr=, count=, drive=bool }
+-- 진행 중인 "내 요청"의 경과/타임아웃 표시 (매 초 갱신됨)
+local function pendingInfo(i)
+  local p = state.pending[i]
+  if not p then return "" end
+  local t = nowSeconds()
+  local elapsed = (t and p.startedAt) and math.floor(t - p.startedAt) or 0
+  if CONFIG.requestTimeout and CONFIG.requestTimeout > 0 then
+    return string.format("  [요청 %s 진행 %d/%d초]",
+      comma(p.amount), elapsed, CONFIG.requestTimeout)
+  end
+  return string.format("  [요청 %s 진행 %d초]", comma(p.amount), elapsed)
+end
+
+-- 타임아웃 감시 (매 초). 응답 없는 요청은 중단하고, 가능하면 AE 작업도 취소한다.
+local function checkPending(ctx)
+  local t = nowSeconds()
+  if not t then return end
+  for i = 1, SLOT_COUNT do
+    local p = state.pending[i]
+    if p then
+      local timeout = CONFIG.requestTimeout or 0
+      local elapsed = p.startedAt and (t - p.startedAt) or 0
+      if timeout > 0 and elapsed >= timeout then
+        local wasDone = callBool(p.status, "isDone")
+        state.pending[i] = nil
+        if wasDone then
+          log("슬롯 %d: 요청 완료(%.0f초)", i, elapsed)
+        else
+          local canceled = false
+          if CONFIG.cancelOnTimeout and ctx.mc then
+            local cpu = findCraftingCpu(ctx.mc, p.slot, true)
+            if cpu then
+              local ok = callValue(cpu, "cancel")
+              canceled = ok and true or false
+            end
+          end
+          if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
+            state.cooldownUntil[i] = t + CONFIG.timeoutCooldown
+          end
+          log("슬롯 %d: %.0f초 동안 완료되지 않아 요청을 중단했습니다%s", i, elapsed,
+            canceled and " (AE CPU 작업 취소됨)"
+                     or " (해당 CPU를 못 찾아 취소 못 함 — AE 크래프팅 GUI에서 취소 가능)")
+        end
+      end
+    end
+  end
+end
+
+-- ctx = { lm=, lmAddr=, mc=, mcAddr=, kind=, count=, drive=bool }
 local function runCycle(ctx)
   local lm, mc = ctx.lm, ctx.mc
-  local out = {}
+  local recs = {}
   local slots = readAllSlots(lm)
 
   if ctx.drive then takeOver(lm, slots) end
 
-  local requested, missing = 0, 0
+  local requested, missing, crafting, waiting = 0, 0, 0, 0
+  local t = nowSeconds()
+
   for i = 1, SLOT_COUNT do
     local s = slots[i]
     if not s then
-      out[#out + 1] = string.format(" %d  (빈 슬롯)", i)
+      recs[i] = { text = string.format(" %d  (빈 슬롯)", i) }
     else
-      local head = slotLine(s)
+      local head = slotHead(s)
       if mc == nil then
-        out[#out + 1] = head .. "  ME 조회 불가(me_controller/me_interface 없음)"
+        recs[i] = { text = head .. "  ME 조회 불가(me_controller/me_interface 없음)" }
       else
         local stored, how = storedAmount(mc, s)
         if stored == nil then
-          out[#out + 1] = head .. "  조회 실패: " .. tostring(how)
+          recs[i] = { text = head .. "  조회 실패: " .. tostring(how) }
         else
           local deficit = s.quantity - stored
+          local cooling = state.cooldownUntil[i] and t and (state.cooldownUntil[i] > t)
           if deficit <= 0 then
-            out[#out + 1] = head .. string.format("  보관 %-11s 충족", comma(stored))
+            recs[i] = { text = head .. string.format("  보관 %-11s 충족", comma(stored)) }
           elseif (not ctx.drive) or CONFIG.dryRun then
-            out[#out + 1] = head .. string.format("  보관 %-11s 부족 %s (요청 안 함)",
-              comma(stored), comma(deficit))
+            recs[i] = { text = head .. string.format("  보관 %-11s 부족 %s (요청 안 함)",
+              comma(stored), comma(deficit)) }
           elseif jobBusy(i) then
-            out[#out + 1] = head .. string.format("  보관 %-11s 이전 요청 진행 중", comma(stored))
+            recs[i] = { text = head .. string.format("  보관 %-11s 이전 요청 진행 중", comma(stored)) }
+          elseif cooling then
+            waiting = waiting + 1
+            recs[i] = { text = head .. string.format("  보관 %-11s 타임아웃 후 대기 %d초",
+              comma(stored), math.floor(state.cooldownUntil[i] - t)) }
+          elseif CONFIG.skipIfMaintainer and not s.isDone then
+            recs[i] = { text = head .. "  유지기 자체 작업 진행 중(중복 요청 안 함)" }
           else
-            local amount = decideAmount(s, deficit)
-            local craftable = findCraftable(mc, s)
-            if not craftable then
-              missing = missing + 1
-              out[#out + 1] = head .. string.format("  보관 %-11s 레시피 없음(Not Found)", comma(stored))
+            local cpu = findCraftingCpu(mc, s)
+            if cpu then
+              crafting = crafting + 1
+              recs[i] = { text = head .. "  AE 제작 중(중복 요청 안 함)" }
             else
-              local ok, st = callValue(craftable, "request", amount)
-              if ok then
-                state.pending[i] = st
-                requested = requested + 1
-                out[#out + 1] = head .. string.format("  보관 %-11s -> 요청 %s",
-                  comma(stored), comma(amount))
+              local amount = decideAmount(s, deficit)
+              local craftable = findCraftable(mc, s)
+              if not craftable then
+                missing = missing + 1
+                recs[i] = { text = head .. string.format("  보관 %-11s 레시피 없음(Not Found)", comma(stored)) }
               else
-                out[#out + 1] = head .. string.format("  보관 %-11s 요청 실패: %s",
-                  comma(stored), tostring(st))
+                local ok, st = callValue(craftable, "request", amount)
+                if ok then
+                  state.pending[i] = { status = st, amount = amount, slot = s, startedAt = nowSeconds() }
+                  state.cooldownUntil[i] = nil
+                  requested = requested + 1
+                  recs[i] = { text = head .. string.format("  보관 %-11s -> 요청 %s",
+                    comma(stored), comma(amount)) }
+                else
+                  recs[i] = { text = head .. string.format("  보관 %-11s 요청 실패: %s",
+                    comma(stored), tostring(st)) }
+                end
               end
             end
           end
@@ -441,7 +578,7 @@ local function runCycle(ctx)
     end
   end
 
-  return out, requested, missing
+  return recs, requested, missing, crafting, waiting
 end
 
 -- ============================== 5) 화면 출력 ================================
@@ -452,14 +589,33 @@ if component then
   hasScreen = (ok and gpu and ok2 and scr) and true or false
 end
 
-local function render(header, lines, footer)
+local function headerText(ctx)
+  return string.format("== AE Maintainer %s | %s | 주기 %d초 | takeover=%s | %s ==",
+    VERSION, ctx.drive and "DRIVE" or "MONITOR", CONFIG.interval,
+    tostring(CONFIG.takeover), CONFIG.batchMode)
+end
+
+-- 화면에 뿌릴 줄 목록 (매 초 다시 만든다 → 진행 시간/남은 시간이 실시간으로 바뀜)
+local function buildView(ctx, recs, requested, missing, crafting, waiting, remain)
+  local view = {}
+  view[#view + 1] = headerText(ctx)
+  for i = 1, SLOT_COUNT do
+    local r = recs[i]
+    view[#view + 1] = (r and r.text or string.format(" %d  -", i)) .. pendingInfo(i)
+  end
+  view[#view + 1] = string.format(
+    " 이번 주기: 신규요청 %d / AE제작중 %d / 타임아웃대기 %d / 레시피없음 %d",
+    requested, crafting, waiting, missing)
+  view[#view + 1] = string.format(" 다음 요청까지 %d초    (중단: Ctrl+C)", math.max(0, remain))
+  return view
+end
+
+local function drawView(view)
   if hasScreen and term then
     pcall(term.clear)
     pcall(term.setCursorPos, 1, 1)
   end
-  print(header)
-  for _, l in ipairs(lines) do print(l) end
-  if footer and footer ~= "" then print(footer) end
+  for _, l in ipairs(view) do print(l) end
 end
 
 
@@ -477,30 +633,43 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer)
 
 설정 파일: ./ae_maintainer.cfg (key=value, 예: interval=120 / takeover=false)
 
+주요 설정
+  interval        요청 주기(초)
+  batchMode       need | batch | fill
+  skipIfCrafting  AE CPU 가 같은 품목을 제작 중이면 요청 안 함 (기본 true)
+  requestTimeout  요청 후 이 초(기본 60) 안에 완료 안 되면 중단 + CPU 취소 (0=끔)
+  timeoutCooldown 중단 후 재요청까지 대기(초, 기본 0)
+  countdown       화면에 다음 주기 남은 시간 표시 (기본 true)
+
 필요 컴포넌트
   - 어댑터 + ME Level Maintainer : level_maintainer  (설정/수량 읽기)
-  - 어댑터 + ME Controller       : me_controller    (보관량 조회 + 크래프트 요청)
+  - 어댑터 + ME Controller       : me_controller    (보관량 조회 + 크래프트 요청/취소)
     (ME Controller 대신 ME Interface 를 붙여도 됩니다 -> me_interface)
 ]]
 
-local function headerText(ctx)
-  return string.format("== AE Maintainer %s | %s | 주기 %d초 | takeover=%s | batchMode=%s ==",
-    VERSION, ctx.drive and "DRIVE" or "MONITOR", CONFIG.interval,
-    tostring(CONFIG.takeover), CONFIG.batchMode)
+-- 다음 주기까지 대기하면서 1초마다 화면을 갱신하고 타임아웃을 감시한다.
+local function waitWithCountdown(ctx, recs, requested, missing, crafting, waiting)
+  local remain = CONFIG.interval
+  local firstDraw = true
+  while true do
+    local force = firstDraw or (remain <= 0)
+    firstDraw = false
+    if (hasScreen and CONFIG.countdown) or force or (remain % 5 == 0) then
+      drawView(buildView(ctx, recs, requested, missing, crafting, waiting, remain))
+    end
+    if remain <= 0 then break end
+    local step = math.min(1, remain)
+    os.sleep(step)
+    remain = remain - step
+    checkPending(ctx)          -- 매 초: 타임아웃 낸 요청 중단/취소
+  end
 end
 
 local function mainLoop(ctx)
   log("시작: %s 모드, 주기 %d초 (중단하려면 Ctrl+C)", ctx.drive and "DRIVE" or "MONITOR", CONFIG.interval)
   while true do
-    local lines, requested, missing = runCycle(ctx)
-    render(headerText(ctx), lines,
-      string.format(" 이번 주기: 요청 %d건 / 레시피 없음 %d건", requested, missing))
-    local remain = CONFIG.interval
-    while remain > 0 do
-      local step = math.min(remain, 5)
-      os.sleep(step)
-      remain = remain - step
-    end
+    local recs, requested, missing, crafting, waiting = runCycle(ctx)
+    waitWithCountdown(ctx, recs, requested, missing, crafting, waiting)
   end
 end
 
@@ -559,9 +728,8 @@ local function main(...)
     if argv[2] then CONFIG.interval = tonumber(argv[2]) or CONFIG.interval end
   elseif cmd == "once" then
     ctx.drive = false
-    local lines, requested, missing = runCycle(ctx)
-    render(headerText(ctx), lines,
-      string.format(" [1회 실행] 부족분 계산/요청 %d건, 레시피 없음 %d건", requested, missing))
+    local recs, requested, missing, crafting, waiting = runCycle(ctx)
+    drawView(buildView(ctx, recs, requested, missing, crafting, waiting, 0))
     return
   elseif cmd ~= nil then
     log("알 수 없는 명령입니다: %s (help 를 확인하세요)", tostring(cmd))

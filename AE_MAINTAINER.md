@@ -99,6 +99,23 @@ ME Controller 블록은 `me_controller`, ME Interface 블록은 `me_interface` �
 Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePower[, cpuName]]])`
 요청 반환값(상태 userdata): `isComputing()` · `hasFailed()` · `isCanceled()` · `isDone()`
 
+### `getCpus()` 가 돌려주는 CPU (제작 중 감지 · 취소)
+
+`getCpus()` 는 제작 CPU 마다 userdata 를 돌려줍니다. 실측 콜백(OC jar `NetworkControl$Cpu`):
+
+| 메서드 | 반환 | 설명 |
+|---|---|---|
+| `isBusy()` | boolean | 이 CPU 가 작업 중인가 |
+| `isActive()` | boolean | CPU 가 활성인가 |
+| `finalOutput()` | table 또는 nil | **이 CPU 가 만들고 있는 최종 결과물** (제작 중 감지의 핵심) |
+| `activeItems()` | table | 현재 제작 중인 중간 산출물들 |
+| `pendingItems()` | table | 아직 조달이 필요한 아이템들 |
+| `storedItems()` | table | CPU 내부에 보관된 아이템들 |
+| `cancel()` | boolean | **이 CPU 의 현재 제작 작업을 취소** |
+
+> v1.2 는 `finalOutput()` 을 슬롯 품목과 비교해 "이미 제작 중"을 판단하고, 타임아웃 시 그 CPU 를 `cancel()` 합니다.
+> 주의: 취소는 **그 품목을 제작 중인 CPU 의 작업**을 끊습니다. 같은 CPU 작업에 다른 산출물이 함께 있다면 같이 중단될 수 있습니다.
+
 
 ---
 
@@ -158,31 +175,50 @@ dryRun=false
 | `dryRun` | `false` | `true` = 요청 없이 계산 결과만 표시 |
 | `labelFallback` | `true` | 이름 매칭 실패 시 표시이름으로 재검색 |
 | `autoRestore` | `true` | 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구 |
+| `skipIfCrafting` | `true` | AE CPU 가 같은 품목을 제작 중이면 새 요청 안 함 (`getCpus().finalOutput` 비교) |
+| `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
+| `scanActiveItems` | `false` | 판단에 `activeItems`/`storedItems`/`pendingItems` 도 포함(오탐 가능) |
+| `requestTimeout` | `60` | 요청 후 이 초 안에 완료되지 않으면 중단 + CPU 취소 시도. `0`=끔 |
+| `cancelOnTimeout` | `true` | 타임아웃 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
+| `timeoutCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
+| `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 
-### 매 주기 판단 순서
+### 매 주기 판단 순서 (v1.2)
 
 1. 슬롯 1~5 → 품목/유지수량/배치/사용여부 읽기
 2. (drive 모드면) 사용 중인 슬롯의 유지기 자동요청을 끔
-3. `me_controller` 로 현재 보관량 조회 (아이템=개수, 유체=mB)
+3. `me_controller`/`me_interface` 로 현재 보관량 조회 (아이템=개수, 유체=mB)
 4. `부족분 = 유지수량 - 보관량` → 0 이하면 "충족"
-5. 부족하면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)`
-6. 내가 넣은 요청이 아직 진행 중(`isComputing`)이면 이번 주기는 건너뜀 (중복 요청 방지)
+5. 부족하면 아래 순서로 **중복 요청을 걸러냄**
+   1. 내가 넣은 요청이 아직 진행 중(`isComputing`) → 건너뜀
+   2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
+   3. 유지기 자체가 그 슬롯 작업 중(`isDone=false`) → 건너뜀
+   4. **AE CPU 가 같은 품목을 제작 중**(`getCpus()` → `isBusy` + `finalOutput` 일치) → 건너뜀
+6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 기록)
+
+### 매 초 동작 (대기 중)
+
+- 화면을 다시 그려 **다음 요청까지 남은 시간**과 진행 중 요청의 `경과/타임아웃초` 를 실시간 표시
+- 진행 중 요청이 `requestTimeout` 을 넘기면: 로그에 남기고 추적 해제 + (가능하면) 그 품목을 제작 중인 **CPU 작업 취소**(`cpu.cancel()`)
 
 ---
 
 ## 7. 검증 결과 (실제 실행)
 
-`tests/oc_mock_test.lua` 하네스로 OC 런타임을 흉내 내어 5가지를 실제 실행했습니다(문법 검사 포함, Lua 5.3).
+`tests/oc_mock_test.lua` 하네스로 OC 런타임을 흉내 내어 실제 실행했습니다(문법 검사 포함, Lua 5.3).
 실행 방법: `aetest once` / `aetest drive 5` / `STRICT=1 aetest drive 5`
 
 | 테스트 | 결과 |
 |---|---|
-| `luac5.3 -p ae_maintainer.lua` | 통과 (오류 없음) |
+| `luac5.3 -p ae_maintainer.lua` (v1.2) | 통과 (오류 없음) |
 | `once` (monitor) | 5개 슬롯 읽기 정상, 아이템 부족 3,072 / 유체 부족 50,000 mB 계산, 요청 안 함 |
-| `drive 5` | `setEnable(1,false)`, `setEnable(2,false)` → `request(512)`, `request(16000)` 실행 → 다음 주기 "이전 요청 진행 중" → 인터럽트 시 `setEnable(...,true)` **원상복구** |
-| `drive 5` (STRICT=1, userdata self 미주입 규약) | 동일하게 정상 동작 (두 호출 규약 모두 대응 확인) |
-| `set 2 250000 32000` | `setSlot(2, 250000, 32000)` 호출 / 반환 `true` 확인 |
-| `help` | 정상 출력 |
+| `drive 5` | `setEnable(1,false)`, `setEnable(2,false)` → `request(512)`, `request(16000)` → 화면에 `[요청 512 진행 0/60초]`, `다음 요청까지 5초` 표시 → 인터럽트 시 **원상복구** |
+| **`CPU_BUSY_MATCH=1 drive 30`** | 슬롯1은 `AE 제작 중(중복 요청 안 함)` 으로 건너뛰고, 슬롯2만 `request(16000)` 실행 (중복 방지 확인) |
+| **타임아웃** `requestTimeout=3` | 3초 경과 시 로그 `슬롯 1: 3초 동안 완료되지 않아 요청을 중단했습니다 (AE CPU 작업 취소됨)` + mock `CPU cancel()` 호출 확인. 카운트다운은 60→59→58초로 실시간 갱신 |
+| `COMPONENT_SET=interface` + drive | `me_interface` 로 인식해 동일하게 요청/원상복구 |
+| `STRICT=1 COMPONENT_SET=interface` | 동일하게 정상 (userdata 호출 규약 2종 모두 대응) |
+| `COMPONENT_SET=none` | 크래시 없이 `ME 조회 불가(me_controller/me_interface 없음)` |
+| `set 2 250000 32000` / `help` | `setSlot(2, …)` 반환 `true` / 도움말 정상 |
 
 ---
 
@@ -216,11 +252,14 @@ dryRun=false
 | `ME 조회 불가(me_controller/me_interface 없음)` | 어댑터를 ME Controller 또는 ME Interface 에 붙이세요 |
 | 유지기 자체가 안 움직임 | `takeover=true` 이면 의도된 동작(OC 단독 관리). OC를 종료하면 자동 복구 |
 | `레시피 없음(Not Found)` | AE2 패턴 미등록 / CPU·재료 부족 |
+| `슬롯 N: 60초 동안 완료되지 않아 요청을 중단했습니다 (해당 CPU를 못 찾아 취소 못 함…)` | 그 품목을 제작 중인 CPU 를 찾지 못한 경우입니다(AE 크래프팅 상태 GUI에서 직접 취소 가능). 재요청을 잠시 막고 싶으면 `timeoutCooldown` 값을 주세요 |
+| `AE 제작 중(중복 요청 안 함)` 이 계속 뜸 | 의도된 동작입니다. 다른 품목까지 걸러지면 `scanActiveItems=true` 를 끄거나 `skipIfCrafting=false` 로 두세요 |
 
 ## 11. 변경 이력
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.2 | 2026-09-26 | **중복 요청 방지 강화**: AE CPU 가 같은 품목을 제작 중이면(`getCpus().finalOutput` 비교) 요청하지 않고, 유지기 자체 작업 중인 슬롯도 건너뜀. **응답 없는 요청 자동 중단**: `requestTimeout`(기본 60초) 초과 시 요청 중단 + 그 CPU 작업 `cancel()`. 화면에 **다음 주기까지 남은 시간/진행 경과를 1초마다** 표시 |
 | v1.1 | 2026-09-26 | **긴급 수정**: `component`/`computer`/`term` 을 전역 대신 `require` 로 받도록 변경(게임 내 즉시 크래시 원인). 네트워크 컴포넌트로 **`me_interface` 도 지원**(`me_controller` 우선). 검증 하네스가 실제 OpenOS처럼 전역을 금지하도록 개선(회귀 방지) |
 | v1.0 | 2026-09-26 | 최초 공개: 유지기 슬롯 5개 읽기, 주기별 요청, takeover/원상복구, monitor/once/set 모드 |
 

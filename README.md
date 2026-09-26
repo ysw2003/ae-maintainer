@@ -7,7 +7,10 @@ OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트�
 |---|---|
 | 읽는 값 | 품목(아이템/유체), 유지 수량(`quantity`), 1회 제작량(`batch`), 슬롯 사용여부, 작업 진행상태 |
 | 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 |
-| 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer), `me_controller` (어댑터 + ME Controller) |
+| 중복 요청 방지 | **AE CPU 가 같은 품목을 이미 제작 중이면 새 요청을 넣지 않음** (`finalOutput` 비교) + 유지기 자체 작업 중이어도 건너뜀 |
+| 응답 없는 요청 | 지정 시간(기본 **60초**) 안에 완료되지 않으면 **요청을 중단하고 해당 AE CPU 작업 취소 시도** |
+| 화면 표시 | 다음 요청까지 남은 시간 + 진행 중 요청 경과/타임아웃을 **1초마다** 갱신 |
+| 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer), `me_controller` 또는 `me_interface` |
 | 검증 환경 | GTNH 2.9.0-beta-3 · `appliedenergistics2-rv3-beta-1050-GTNH` · `ae2fc-1.5.106-gtnh` · `OpenComputers-1.12.61-GTNH` |
 
 > AE2 기본 모드에는 이 블록이 없고, **AE2FC(`ae2fc`)가 추가**합니다. AE2FC가 OpenComputers 드라이버를 내장하고 있어
@@ -68,6 +71,13 @@ ae_maintainer drive 60    -- 60초 주기로 직접 요청
 | `dryRun` | `false` | 요청 없이 계산 결과만 표시 |
 | `labelFallback` | `true` | 이름 매칭 실패 시 표시이름으로 재검색 |
 | `autoRestore` | `true` | 종료(Ctrl+C) 시 유지기 슬롯 enable 상태 자동 복구 |
+| `skipIfCrafting` | `true` | AE CPU 가 같은 품목을 제작 중이면 새 요청 안 함 (`getCpus().finalOutput` 비교) |
+| `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
+| `scanActiveItems` | `false` | 위 판단에 `activeItems`/`storedItems`/`pendingItems` 까지 포함(오탐 가능) |
+| `requestTimeout` | `60` | 요청 후 이 초 안에 완료되지 않으면 중단(+CPU 취소 시도). `0`=끔 |
+| `cancelOnTimeout` | `true` | 타임아웃 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
+| `timeoutCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
+| `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 
 ## 4. 파일 구성
 
