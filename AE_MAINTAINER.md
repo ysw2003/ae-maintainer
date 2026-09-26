@@ -4,11 +4,14 @@
 작업 폴더: `/home/ubuntu/github/ae-maintainer/`
 
 ```
-~/github/ae-maintainer/
+~/github/ae-maintainer/            (GitHub: ysw2003/ae-maintainer)
 ├── ae_maintainer.lua              OC 컴퓨터에 넣을 프로그램 (본체)
-├── ae_maintainer.cfg.example      설정 예시 (게임에서는 ae_maintainer.cfg 로 복사)
+├── ae_maintainer.cfg              기본 설정 (인게임에서 그대로 내려받아 수정해 사용)
+├── install.lua                    OC용 설치 스크립트 (프로그램 + 설정 함께 설치)
 ├── AE_MAINTAINER.md               이 문서
-└── tests/oc_mock_test.lua         OC 없이 서버에서 돌려보는 검증 하네스
+└── tests/
+    ├── oc_mock_test.lua           프로그램 검증 하네스 (OC 없이 실행)
+    └── oc_mock_install.lua        install.lua 검증 하네스
 ```
 
 검증: Lua 5.3 문법 검사 + 목(mock) 하네스 실행 검증. 하네스 실행 예: `aetest once` / `aetest drive 5`
@@ -134,10 +137,26 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 
 ## 5. 파일을 컴퓨터에 넣는 방법
 
-1. 이 폴더의 `ae_maintainer.lua` 내용을 복사 (`aecode` 별칭으로 바로 볼 수 있습니다)
-2. OC 컴퓨터에서 `edit /usr/bin/ae_maintainer.lua` (또는 홈에 `edit ae_maintainer.lua`)
-3. 터미널에서 붙여넣기 → `Ctrl+S` 저장 → `Ctrl+W` 종료
-4. 실행: `ae_maintainer` (OpenOS는 `.lua` 확장자를 자동으로 찾습니다)
+**방법 A — 설치 스크립트 (프로그램 + 설정 한 번에, 인터넷 카드 필요)**
+```lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/install.lua /home/install.lua && install
+```
+- `ae_maintainer.lua` 와 `ae_maintainer.cfg` 를 `/home` 에 설치합니다.
+- 수정한 cfg 는 보존(`--force` 로 강제 갱신).
+- OpenOS 셸은 `&&`/`;` 연결을 지원합니다(`lib/sh.lua` 실측 확인).
+
+**방법 B — 파일 직접 받기**
+```lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.lua /home/ae_maintainer.lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.cfg /home/ae_maintainer.cfg
+```
+
+**방법 C — 인터넷 카드가 없을 때 (복붙)**
+1. 이 문서/저장소의 `ae_maintainer.lua` 내용을 복사 (`aecode` 별칭으로 바로 볼 수 있습니다)
+2. OC 컴퓨터에서 `edit /home/ae_maintainer.lua` → 붙여넣기 → `Ctrl+S` → `Ctrl+W`
+3. `ae_maintainer.cfg` 는 만들지 않아도 됩니다 — **첫 실행 때 프로그램이 기본값으로 자동 생성**합니다.
+
+실행(3가지 방법 공통): `ae_maintainer monitor` → 정상이면 `ae_maintainer drive 30`
 
 부팅 시 자동 실행: OpenOS 부팅 스크립트(`/home/.shrc` 등)에 `ae_maintainer &` 를 넣으면 됩니다.
 (버전에 따라 다를 수 있으니 안 되면 부팅 후 수동 실행)
@@ -219,6 +238,8 @@ dryRun=false
 | `STRICT=1 COMPONENT_SET=interface` | 동일하게 정상 (userdata 호출 규약 2종 모두 대응) |
 | `COMPONENT_SET=none` | 크래시 없이 `ME 조회 불가(me_controller/me_interface 없음)` |
 | `set 2 250000 32000` / `help` | `setSlot(2, …)` 반환 `true` / 도움말 정상 |
+| **v1.3 cfg 자동 생성** | 빈 폴더에서 실행 → `설정 파일 ae_maintainer.cfg 가 없어 기본값으로 만들었습니다` 로그 + 14개 키가 든 파일 생성 확인 |
+| **v1.3 `install.lua`** (mock) | 1회차 프로그램+cfg 설치(원본과 sha256 일치), 2회차 cfg `건너뜀(이미 있음)`, 3회차 `--force` 로 둘 다 갱신 |
 
 ---
 
@@ -259,6 +280,7 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.3 | 2026-09-26 | **설정 파일 동봉**: `ae_maintainer.cfg` 를 저장소에 포함해 인게임에서 그대로 내려받을 수 있게 함. **cfg 자동 생성**(없으면 첫 실행 때 기본값으로 생성). **`install.lua`** 추가(프로그램+설정을 한 줄로 설치, 수정한 cfg 는 보존, `--force` 지원). 검증 하네스에 install.lua 테스트 추가 |
 | v1.2 | 2026-09-26 | **중복 요청 방지 강화**: AE CPU 가 같은 품목을 제작 중이면(`getCpus().finalOutput` 비교) 요청하지 않고, 유지기 자체 작업 중인 슬롯도 건너뜀. **응답 없는 요청 자동 중단**: `requestTimeout`(기본 60초) 초과 시 요청 중단 + 그 CPU 작업 `cancel()`. 화면에 **다음 주기까지 남은 시간/진행 경과를 1초마다** 표시 |
 | v1.1 | 2026-09-26 | **긴급 수정**: `component`/`computer`/`term` 을 전역 대신 `require` 로 받도록 변경(게임 내 즉시 크래시 원인). 네트워크 컴포넌트로 **`me_interface` 도 지원**(`me_controller` 우선). 검증 하네스가 실제 OpenOS처럼 전역을 금지하도록 개선(회귀 방지) |
 | v1.0 | 2026-09-26 | 최초 공개: 유지기 슬롯 5개 읽기, 주기별 요청, takeover/원상복구, monitor/once/set 모드 |

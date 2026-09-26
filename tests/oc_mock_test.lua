@@ -195,7 +195,7 @@ end
 
 local chunk = assert(loadfile(TARGET))
 local ok, err = pcall(chunk, ...)
-os.remove("ae_maintainer.cfg")
+if cfgText and cfgText ~= "" then os.remove("ae_maintainer.cfg") end
 io.write(string.format("### (mock) 프로그램 종료 (cpuCanceled=%s, sleeps=%d)\n",
   tostring(cpuCanceled), sleeps))
 if not ok then io.write("### (mock) 오류: " .. tostring(err) .. "\n") end

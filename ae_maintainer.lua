@@ -30,7 +30,7 @@
 --       컴퓨터를 끄기 전에 ae_maintainer 를 먼저 종료(복원)하는 편이 안전하다.
 --------------------------------------------------------------------------------
 
-local VERSION = "1.2"
+local VERSION = "1.3"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -149,6 +149,35 @@ local function loadConfigFile(path)
   end
   f:close()
   return n
+end
+
+-- 기본 설정 파일이 없으면 만들어 준다 (인게임에서 cfg 를 따로 받지 않아도 되게)
+local CFG_KEYS = {
+  "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
+  "skipIfCrafting", "scanActiveItems", "skipIfMaintainer",
+  "requestTimeout", "cancelOnTimeout", "timeoutCooldown", "countdown",
+}
+
+local function ensureConfigFile(path)
+  local f = io.open(path, "r")
+  if f then f:close(); return false end
+  local out = io.open(path, "w")
+  if not out then return false end
+  out:write("# ae_maintainer 기본 설정 (자동 생성)\n")
+  out:write("# 값을 바꾼 뒤 프로그램을 다시 실행하세요. 주석(#)과 빈 줄은 무시됩니다.\n")
+  out:write("# 설명: https://github.com/ysw2003/ae-maintainer  (ae_maintainer.cfg)\n\n")
+  for _, k in ipairs(CFG_KEYS) do
+    local v = CONFIG[k]
+    if type(v) == "boolean" then
+      out:write(string.format("%s=%s\n", k, tostring(v)))
+    elseif type(v) == "number" then
+      out:write(string.format("%s=%d\n", k, v))
+    elseif type(v) == "string" then
+      out:write(string.format("%s=%s\n", k, v))
+    end
+  end
+  out:close()
+  return true
 end
 
 -- 컴포넌트 탐색 ---------------------------------------------------------------
@@ -676,6 +705,9 @@ end
 local function main(...)
   local argv = { ... }
   local cmd = argv[1]
+  if ensureConfigFile(CONFIG_FILE) then
+    log("설정 파일 %s 가 없어 기본값으로 만들었습니다(필요하면 수정하세요).", CONFIG_FILE)
+  end
   local hadCfg = loadConfigFile(CONFIG_FILE)
   if hadCfg > 0 then log("설정 파일 %s 에서 %d개 항목을 읽었습니다.", CONFIG_FILE, hadCfg) end
 

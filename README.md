@@ -18,17 +18,43 @@ OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트�
 
 ## 1. 인게임 설치 (권장)
 
-OC 컴퓨터에 **인터넷 카드(Internet Card)** 를 넣은 상태에서:
+OC 컴퓨터에 **인터넷 카드(Internet Card)** 를 넣은 상태에서 아래 중 하나를 실행하세요.
+
+### 방법 A — 설치 스크립트로 한 번에 (프로그램 + 설정)
+
+```lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/install.lua /home/install.lua && install
+```
+
+- `ae_maintainer.lua` 와 `ae_maintainer.cfg` 를 `/home` 에 함께 설치합니다.
+- **이미 수정한 설정(cfg)은 건드리지 않습니다.** 최신 기본값으로 덮어쓰려면 `install --force`.
+
+### 방법 B — 파일 직접 받기
 
 ```lua
 wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.lua /home/ae_maintainer.lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.cfg /home/ae_maintainer.cfg
+```
+
+OpenOS 셸은 `&&` 연결을 지원하므로 한 줄로도 됩니다:
+
+```lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.lua /home/ae_maintainer.lua && wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.cfg /home/ae_maintainer.cfg
+```
+
+### 설정 파일이 없어도 됩니다
+
+- `ae_maintainer.cfg` 가 없으면 **첫 실행 때 프로그램이 기본값 cfg 를 자동으로 만들어 줍니다.**
+- 프로그램과 cfg 를 둘 다 안 받았어도, 최소한 `ae_maintainer.lua` 만 있으면 실행은 됩니다.
+
+```lua
 ae_maintainer monitor     -- 먼저 읽기 전용(monitor)으로 값이 제대로 읽히는지 확인
-ae_maintainer drive 60    -- 60초 주기로 직접 요청
+ae_maintainer drive 30    -- 30초 주기로 직접 요청
 ```
 
 - OpenOS 의 PATH 는 `/bin:/usr/bin:/home/bin:.` 이므로 `/home` 에 받으면 이름만으로 실행됩니다.
   (`/bin/ae_maintainer.lua` 로 받아도 됩니다)
-- 인터넷 카드가 없거나 레포가 private 이면: 이 페이지의 `ae_maintainer.lua` 내용을 복사해
+- 인터넷 카드가 없어 `wget` 을 못 쓰면: 이 페이지의 파일 내용을 복사해
   OC 컴퓨터에서 `edit /home/ae_maintainer.lua` → 붙여넣기 → `Ctrl+S`, `Ctrl+W`
 - 부팅 시 자동 실행: `/home/.shrc` 에 `ae_maintainer &` 추가 (OpenOS 버전에 따라 다를 수 있음)
 
@@ -83,16 +109,20 @@ ae_maintainer drive 60    -- 60초 주기로 직접 요청
 
 ```
 ae_maintainer.lua            프로그램 본체 (OC 컴퓨터에 넣는 파일)
-ae_maintainer.cfg.example    설정 예시
+ae_maintainer.cfg            기본 설정 (인게임에서 그대로 내려받아 사용 / 수정해서 씀)
+install.lua                  OC용 설치 스크립트 (프로그램 + 설정 한 번에 내려받기)
 AE_MAINTAINER.md             상세 문서 (컴포넌트 API 표 · 검증 근거 · 주의사항 · 되돌리기)
-tests/oc_mock_test.lua       OC 없이 서버 PC에서 검증하는 목(mock) 하네스
+tests/oc_mock_test.lua       프로그램 검증 하네스 (OC 없이 실행)
+tests/oc_mock_install.lua    install.lua 검증 하네스
 ```
 
 검증 하네스 (Lua 5.3 설치된 PC에서):
 ```bash
-lua5.3 tests/oc_mock_test.lua once          # 읽기 경로
-lua5.3 tests/oc_mock_test.lua drive 5       # 요청 + 원상복구 경로
-STRICT=1 lua5.3 tests/oc_mock_test.lua drive 5   # userdata 호출 규약 변형
+lua5.3 tests/oc_mock_test.lua once               # 읽기 경로
+lua5.3 tests/oc_mock_test.lua drive 5            # 요청 + 카운트다운 + 원상복구
+CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
+CFG_EXTRA=$'requestTimeout=3' MAX_SLEEPS=8 lua5.3 tests/oc_mock_test.lua drive   # 타임아웃+CPU 취소
+TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_install.lua     # 설치 스크립트
 ```
 
 ## 5. 문제 해결
