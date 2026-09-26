@@ -50,14 +50,18 @@ local NET = {
 
 -- ---- 상태 객체(CraftingStatus) 흉내 ----
 local status = wrapValue({
-  isComputing = function(self) return true end,
+  isComputing = function(self) return not cpuCanceled end,
   hasFailed   = function(self) return false end,
-  isCanceled  = function(self) return false end,
-  isDone      = function(self) return false end,
+  isCanceled  = function(self) return cpuCanceled end,
+  isDone      = function(self) return cpuCanceled end,
 })
 
 -- ---- Craftable 흉내 ----
 local craftable = wrapValue({
+  getItemStack = function(self)
+    return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 1 }
+  end,
+  -- 구버전 이름(프로그램은 getItemStack 우선, 실패 시 getStack 시도)
   getStack = function(self)
     return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 1 }
   end,
@@ -114,9 +118,14 @@ end
 --     CPU_NOT_BUSY=1     isBusy=false, isActive=true (대기 상태 흉내)
 --     CPU_ITEM_IN_LIST=1 최종산출물이 아니라 storedItems 에만 품목이 있음
 --     CPU_OTHER_ITEM=1   CPU 가 다른 품목을 제작 중
---     CPU_CRAFT_COUNT=N  요청 후 CPU 안에 그 품목이 N개 '제작중'으로 표시됨 (정지 감지 검증)
+--     CPU_CRAFT_COUNT=N  요청 후 CPU 안에 그 품목이 N개 '제작중'으로 표시됨
 --     CPU_CRAFT_DECREASE=1  제작중 수치가 매 조회마다 10씩 줄어듦 (= 진행 중)
+--     CPU_PRE_BUSY=1     처음부터 '남의 작업'으로 사용 중 (요청 시 CPU 를 특정할 수 없는 상황)
+--     CPU_UNREADABLE=1   CPU 내용(목록/finalOutput) 조회가 실패하는 환경
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
+local CPU_PRE_BUSY = os.getenv("CPU_PRE_BUSY") == "1"
+local CPU_UNREADABLE = os.getenv("CPU_UNREADABLE") == "1"
+if CPU_PRE_BUSY then cpuBusy = true end
 local CPU_NOT_BUSY = os.getenv("CPU_NOT_BUSY") == "1"
 local CPU_ITEM_IN_LIST = os.getenv("CPU_ITEM_IN_LIST") == "1"
 local CPU_OTHER_ITEM = os.getenv("CPU_OTHER_ITEM") == "1"
@@ -132,14 +141,16 @@ local function makeCpuValue(tag, hostItem)
     isBusy  = function(self) if CPU_NOT_BUSY then return false end return cpuBusy end,
     isActive = function(self) return cpuBusy end,
     finalOutput = function(self)
+      if CPU_UNREADABLE then error("CPU 내용 조회 불가 (mock)") end
       if not cpuBusy or not hostItem then return nil end
       if CPU_OTHER_ITEM then
         return { name = "minecraft:diamond", label = "Diamond", damage = 0, size = 64 }
       end
-      if CPU_ITEM_IN_LIST or CPU_CRAFT_COUNT > 0 then return nil end
+      if CPU_ITEM_IN_LIST or CPU_CRAFT_COUNT > 0 or CPU_PRE_BUSY then return nil end
       return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
     end,
     activeItems = function(self)
+      if CPU_UNREADABLE then error("CPU 내용 조회 불가 (mock)") end
       if not cpuBusy or not hostItem then return {} end
       if CPU_CRAFT_COUNT > 0 then
         if CPU_CRAFT_DECREASE then
@@ -154,12 +165,16 @@ local function makeCpuValue(tag, hostItem)
       return {}
     end,
     storedItems  = function(self)
+      if CPU_UNREADABLE then error("CPU 내용 조회 불가 (mock)") end
       if cpuBusy and hostItem and CPU_ITEM_IN_LIST then
         return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 128 } }
       end
       return {}
     end,
-    pendingItems = function(self) return {} end,
+    pendingItems = function(self)
+      if CPU_UNREADABLE then error("CPU 내용 조회 불가 (mock)") end
+      return {}
+    end,
     cancel = function(self)
       cpuCanceled = true
       io.write(string.format("   >> (mock) %s.cancel() 호출됨\n", tag))

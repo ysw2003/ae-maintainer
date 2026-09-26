@@ -9,10 +9,11 @@ OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트�
 | **다중 유지기** | 어댑터에 붙은 **모든 `ME Level Maintainer`** 를 자동 인식(주소순). 기본 화면 = **2대씩 슬롯 5줄 상세 + 자동 페이지 전환**, `summary` 로 한 줄 요약, `show <번호>` 로 1대 고정 |
 | 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 (유지기 많을 땐 보관량을 사이클당 1회 일괄 조회) |
 | 중복 요청 방지 | **AE CPU 작업에 같은 품목이 들어 있으면**(최종산출물·보관·대기·제작중, **사람이 요청한 것 포함**) 새 요청을 넣지 않음. `getCpus()` 의 **행 테이블에서 `.cpu` 값**을 꺼내 검사하며(v2.5), `isBusy=false`인 "대기" 상태여도 목록을 읽어 판단(v2.4) |
-| 응답 없는 요청 | ~~절대 시간 타임아웃~~ → **v3.0에서 제거**. 대신 요청 루프마다 **CPU 안 제작중 수치**를 비교 |
-| **정지 감지(취소)** | `stallCycles`(기본 **2회 루프**) 동안 **CPU의 제작중 수치가 그대로면**(예: `Crafting: 52` 고정) 요청 중단 + **그 CPU 작업 취소**. 수치가 변하면(=진행 중) 취소하지 않음 |
-| 판정 제외 | **네트워크 재고량은 사용량에 따라 크게 변하므로 판정 기준으로 쓰지 않음**(v3.1). CPU 안 수치를 못 읽는 품목(유체·CPU에 없는 품목)은 정지 감지 대상에서 제외 |
-| 화면 표시 | 다음 요청까지 남은 시간 + 진행 중 요청의 **제작중 수치 · 정지 카운트**를 **1초마다** 갱신 |
+| 응답 없는 요청 | OC가 넣은 요청은 `cancelAfter`(기본 **600초=10분**)가 지나면 **그 요청을 취소**(0=끔) |
+| **요청 취소(시간 기준)** | 취소 대상은 **OC가 요청한 작업만**. 요청을 넣은 직후 그 작업의 CPU를 기억해 두고, 만료되면 **그 CPU만** `cancel()` 호출 |
+| 플레이어 요청 | 플레이어가 직접 넣은 작업은 추적하지도, 취소하지도 않음(`cancelTarget=recorded` 기본값) |
+| 결과물 확인 | 만료 시점에 재고가 유지수량에 도달했으면 **취소하지 않고 완료 처리** |
+| 화면 표시 | 진행 중 요청의 **경과/남은 시간**(`[요청 512 · 132초 경과 · 468초 후 취소]`)을 **1초마다** 갱신 |
 | 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer, 여러 대), `me_controller` 또는 `me_interface` |
 | 검증 환경 | GTNH 2.9.0-beta-3 · `appliedenergistics2-rv3-beta-1050-GTNH` · `ae2fc-1.5.106-gtnh` · `OpenComputers-1.12.61-GTNH` |
 
@@ -96,9 +97,9 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 ### 화면 예시 (기본: 상세 2대씩)
 
 ```
-== AE Maintainer 3.1 | DRIVE | 상세 1~2 / 3대 | 1/2 페이지 | 다음 주기 42초 ==
+== AE Maintainer 4.0 | DRIVE | 상세 1~2 / 3대 | 1/2 페이지 | 다음 주기 42초 ==
  #1 aaaa0001 창고A   부족 1 · 요청 1 · 제작 0 · 진행 1
-  1 I Machine Casing       유지 4,096   배치 512    보관 1,024   이전 요청 진행 중  [요청 512 · 제작중 52(activeItems, CPU1 CPU #1) · 정지 1/2회]
+  1 I Machine Casing       유지 4,096   배치 512    보관 1,024   이전 요청 진행 중  [요청 512 · 132초 경과 · 468초 후 취소]
   2 F water                유지 100,000 배치 16,000 보관 50,000  충족
   3 (빈 슬롯)  4 (빈 슬롯)  5 (빈 슬롯)
  #2 aaaa0002 -        부족 1 · 요청 0 · 제작 1 · 진행 0
@@ -128,10 +129,9 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `skipIfCrafting` | `true` | AE CPU 작업에 같은 품목이 있으면 새 요청 안 함 |
 | `cpuSkipScope` | `any` | `any`=최종산출물·보관·대기·제작중 어디에든 있으면 스킵(사람 요청 포함) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
-| `stallCycles` | `2` | **요청 루프 N회 동안 CPU 제작중 수치(`Crafting: N`)가 그대로면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔. **재고량은 기준으로 쓰지 않음** |
-| `cancelOnStall` | `true` | 정지 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
-| `cancelFallback` | `single` | 취소 대상을 못 찾았을 때: `single`=사용 중 CPU 가 1대뿐이면 취소 / `none`=취소 안 함 |
-| `stallCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
+| `cancelAfter` | `600` | OC 가 요청한 작업이 이 초를 넘겨도 안 끝나면 **그 요청을 취소**(0=끔). 플레이어가 넣은 작업은 대상이 아님 |
+| `cancelTarget` | `recorded` | 취소할 CPU 선택: `recorded`=요청 시 기억한 CPU만(안전) / `single`=기억이 없으면 사용 중 CPU 1대 취소 / `none`=취소 안 함 |
+| `cancelCooldown` | `0` | 취소 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재요청 |
 | `skipIfAnyCpuBusy` | `false` | `true`=사용 중인 CPU 가 하나라도 있으면 모든 요청 보류(중복 방지 극대화) |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면: `detail`=유지기별 상세(슬롯 5줄) / `summary`=한 줄 요약 |
@@ -162,9 +162,9 @@ lua5.3 tests/oc_mock_test.lua diag               # 진단 출력
 lua5.3 tests/oc_mock_test.lua list               # 전체 유지기 상세
 MAINTAINER_COUNT=3 lua5.3 tests/oc_mock_test.lua drive 10      # 다중 유지기(3대)
 CPU_BUSY_MATCH=1 lua5.3 tests/oc_mock_test.lua drive 30        # 중복 요청 방지
-CPU_CRAFT_COUNT=52 CFG_EXTRA=$'interval=3\nstallCycles=2' lua5.3 tests/oc_mock_test.lua drive   # 제작중 수치 고정 → 정지 감지+CPU 취소
-CPU_CRAFT_COUNT=52 CPU_CRAFT_DECREASE=1 lua5.3 tests/oc_mock_test.lua drive   # 수치가 변하면 취소 안 함
-PARTIAL_AFTER_REQUEST=1 CFG_EXTRA=$'interval=3\nstallCycles=2' lua5.3 tests/oc_mock_test.lua drive   # 재고량으로는 판정 안 함(취소 0건)
+CFG_EXTRA=$'interval=600\ncancelAfter=60' MAX_SLEEPS=70 lua5.3 tests/oc_mock_test.lua drive   # 60초 지나면 취소(기록된 CPU)
+CFG_EXTRA=$'interval=600\ncancelAfter=60\ncancelTarget=none' MAX_SLEEPS=70 lua5.3 tests/oc_mock_test.lua drive  # 취소 안 함
+CPU_BUSY_MATCH=1 CFG_EXTRA=$'interval=600\ncancelAfter=60' MAX_SLEEPS=70 lua5.3 tests/oc_mock_test.lua drive     # 플레이어 작업은 취소 안 함
 TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크립트
 ```
 > 하네스는 실제 환경을 그대로 흉내 냅니다: ① `component`/`computer`/`term` 은 전역이 아니라 모듈,
@@ -181,11 +181,11 @@ TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크�
 | `wget: This program requires an internet card to run.` | 컴퓨터에 **인터넷 카드**를 꽂으세요 |
 | `install` 을 입력했더니 OS 설치(디스크 선택) 화면이 나옴 | OpenOS **내장 명령**입니다. 이 프로젝트는 `ae_maintainer_setup` 을 사용하세요(이름이 겹치지 않게 바꿨습니다) |
 | `요청 실패: request 호출 실패(table)` (v1.3 이하) | v1.4에서 수정. OC는 값(userdata)의 메서드를 **호출 가능한 테이블**로 노출합니다(함수가 아님). v1.4는 타입을 따지지 않고 호출합니다 |
-| **타임아웃인데 CPU 취소가 안 됨** (v2.1 이하) | v2.2에서 수정. 이제 ① 요청 직후 CPU를 기억 ② 품목 포함 CPU 재탐색 ③ `cancelFallback=single`(사용 중 CPU 1대) 순으로 취소하고, 결과를 로그에 표시합니다 |
+| **타임아웃인데 CPU 취소가 안 됨** (v2.1 이하) | v4.0은 `cancelAfter`(기본 10분)로 취소합니다. 로그의 `(CPU 취소됨: …)` / `(취소 대상 CPU 를 특정하지 못해 취소하지 않았습니다)` 로 결과를 확인하고, 필요하면 `cancelTarget=single` 로 완화하세요 |
 | 사람이 요청한 작업과 겹쳐서 유지기가 안 움직임 | **의도된 동작**(`cpuSkipScope=any`). 최종 결과물만 기준으로 삼으려면 `cpuSkipScope=final` 로 설정 |
 | **CPU가 그 품목을 만들고 있는데도 요청이 또 들어감** | **v2.5에서 근본 수정**(`getCpus()` 의 행 테이블에서 `.cpu` 값 추출 — 이전엔 CPU 판독이 전부 실패했음). 그래도 보이면 ① `takeover=true` 확인 ② `skipIfAnyCpuBusy=true`(사용 중 CPU 있으면 전부 보류) ③ `ae_maintainer diag` 로 CPU별 내용 확인 |
-| 64개 요청했는데 30개만 나오고 멈춤 / `Crafting: 52` 에서 안 줄어듦 | **CPU 제작중 수치가 그대로**면 `stallCycles`(기본 2회 루프) 후 **자동 취소**하고 다음 루프에 다시 요청합니다. 참을성을 늘리려면 `stallCycles=3~5` |
-| 재고는 그대로인데 안 취소됨 / `CPU 제작중 수치 없음(정지 감지 제외)` 표시 | v3.1부터 **네트워크 재고량은 판정에 쓰지 않습니다**(사용량에 따라 크게 변함). CPU 안 `Crafting: N` 이 그대로일 때만 취소하며, 수치를 못 읽는 품목은 자동 취소 대상이 아닙니다. `diag` 로 CPU 목록을 확인하세요 |
+| 10분 넘게 제작 중인데 안 끝남 / `Crafting: 52` 에서 안 줄어듦 | `cancelAfter`(기본 600초)가 지나면 **OC가 넣은 요청을 자동 취소**하고 다음 주기에 다시 요청합니다. 더 참으려면 `cancelAfter=1800`(30분) 처럼 늘리세요 |
+| 취소가 안 되고 `취소 대상 CPU 를 특정하지 못해…` 로그가 뜸 | CPU 내용을 읽을 수 없고, 요청 전후로 `busy` 변화도 못 잡은 경우입니다(안전을 위해 취소하지 않음). CPU 가 1대뿐인 환경이면 `cancelTarget=single`, 아예 취소가 필요 없으면 `cancelAfter=0` |
 | 설치 중 `attempt to call a table value (field 'close')` (setup v1.1 이하) | v1.2(setup)에서 수정. 이 환경에서는 `handle.close()` 를 호출할 수 없어(연쇄 `__call` 미지원) 호출하지 않습니다(EOF에서 자동 종료) |
 | 그래도 원인을 모르겠음 | **`ae_maintainer diag`** 실행 후 출력을 보내주세요 (값 타입·메서드 호출 가능 여부가 나옵니다) |
 
