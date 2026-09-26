@@ -1,0 +1,92 @@
+# OpenComputers AE Maintainer (GTNH)
+
+GTNH **2.9.0-beta-3 / AE2FC** 의 `ME Level Maintainer` 블록에 등록된 **아이템·유체 / 유지 수량 / 1회 제작량** 을
+OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트워크에 크래프트 요청을 넣는 Lua 프로그램입니다.
+
+| 항목 | 내용 |
+|---|---|
+| 읽는 값 | 품목(아이템/유체), 유지 수량(`quantity`), 1회 제작량(`batch`), 슬롯 사용여부, 작업 진행상태 |
+| 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 |
+| 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer), `me_controller` (어댑터 + ME Controller) |
+| 검증 환경 | GTNH 2.9.0-beta-3 · `appliedenergistics2-rv3-beta-1050-GTNH` · `ae2fc-1.5.106-gtnh` · `OpenComputers-1.12.61-GTNH` |
+
+> AE2 기본 모드에는 이 블록이 없고, **AE2FC(`ae2fc`)가 추가**합니다. AE2FC가 OpenComputers 드라이버를 내장하고 있어
+> `level_maintainer` 컴포넌트로 유지기 설정을 그대로 읽을 수 있습니다.
+
+## 1. 인게임 설치 (권장)
+
+OC 컴퓨터에 **인터넷 카드(Internet Card)** 를 넣은 상태에서:
+
+```lua
+wget -f https://raw.githubusercontent.com/ysw2003/ae-maintainer/main/ae_maintainer.lua /home/ae_maintainer.lua
+ae_maintainer monitor     -- 먼저 읽기 전용(monitor)으로 값이 제대로 읽히는지 확인
+ae_maintainer drive 60    -- 60초 주기로 직접 요청
+```
+
+- OpenOS 의 PATH 는 `/bin:/usr/bin:/home/bin:.` 이므로 `/home` 에 받으면 이름만으로 실행됩니다.
+  (`/bin/ae_maintainer.lua` 로 받아도 됩니다)
+- 인터넷 카드가 없거나 레포가 private 이면: 이 페이지의 `ae_maintainer.lua` 내용을 복사해
+  OC 컴퓨터에서 `edit /home/ae_maintainer.lua` → 붙여넣기 → `Ctrl+S`, `Ctrl+W`
+- 부팅 시 자동 실행: `/home/.shrc` 에 `ae_maintainer &` 추가 (OpenOS 버전에 따라 다를 수 있음)
+
+## 2. 게임 내 배치
+
+```
+[어댑터] ← ME Level Maintainer   → 컴포넌트 level_maintainer (설정/수량 읽기)
+[어댑터] ← ME Controller         → 컴포넌트 me_controller   (보관량 조회 + 요청)
+[어댑터] ← 화면(선택)            → 상태 표시
+어댑터는 컴퓨터/케이블에 연결, 각 블록은 ME 네트워크에 연결
+```
+
+`component.list("level_maintainer")` 로 잡히는지 먼저 확인하세요.
+
+## 3. 사용법
+
+| 명령 | 동작 |
+|---|---|
+| `ae_maintainer` | 설정대로 상시 실행 (기본 drive / 60초) |
+| `ae_maintainer monitor` | 읽기·표시만 (요청 안 함) |
+| `ae_maintainer drive 30` | 30초 주기로 직접 요청 |
+| `ae_maintainer once` | 1회만 계산/표시 |
+| `ae_maintainer set 1 4096 512` | 1번 슬롯: 유지 4096, 1회 제작 512 로 변경 |
+| `ae_maintainer help` | 도움말 |
+
+### 설정 파일 (`ae_maintainer.cfg`)
+
+프로그램을 실행한 폴더(=보통 `/home`)에 `ae_maintainer.cfg` 를 두면 값을 덮어씁니다.
+예시는 `ae_maintainer.cfg.example` 참고.
+
+| 키 | 기본 | 설명 |
+|---|---|---|
+| `mode` | `drive` | `drive`=OC가 요청 / `monitor`=읽기만 |
+| `interval` | `60` | 요청 주기(초) |
+| `takeover` | `true` | 관리 슬롯의 유지기 자체 자동요청을 꺼서 중복 요청 방지 |
+| `batchMode` | `need` | `need`=min(배치,부족분) / `batch`=배치 고정 / `fill`=배치 단위 올림 |
+| `dryRun` | `false` | 요청 없이 계산 결과만 표시 |
+| `labelFallback` | `true` | 이름 매칭 실패 시 표시이름으로 재검색 |
+| `autoRestore` | `true` | 종료(Ctrl+C) 시 유지기 슬롯 enable 상태 자동 복구 |
+
+## 4. 파일 구성
+
+```
+ae_maintainer.lua            프로그램 본체 (OC 컴퓨터에 넣는 파일)
+ae_maintainer.cfg.example    설정 예시
+AE_MAINTAINER.md             상세 문서 (컴포넌트 API 표 · 검증 근거 · 주의사항 · 되돌리기)
+tests/oc_mock_test.lua       OC 없이 서버 PC에서 검증하는 목(mock) 하네스
+```
+
+검증 하네스 (Lua 5.3 설치된 PC에서):
+```bash
+lua5.3 tests/oc_mock_test.lua once          # 읽기 경로
+lua5.3 tests/oc_mock_test.lua drive 5       # 요청 + 원상복구 경로
+STRICT=1 lua5.3 tests/oc_mock_test.lua drive 5   # userdata 호출 규약 변형
+```
+
+## 5. 주의사항
+
+- **컴퓨터가 꺼져 있으면 아무 것도 유지되지 않습니다.** `takeover=true` 는 유지기 자체 기능을 끄므로,
+  끄기 전에 `Ctrl+C` 로 종료(자동 복구)하는 편이 안전합니다.
+- 주기만 바꾸고 싶다면 OC 없이 `config/ae2fc.cfg` 의 `levelmaintainer { minTick, maxTick }` 를 조정하는 방법이 더 안전합니다.
+- 유체 단위는 **mB** 입니다. 화면 폭 계산 문제로 한글 표시이름의 열이 조금 어긋날 수 있습니다(동작에는 영향 없음).
+
+자세한 API 표와 실측 근거는 [`AE_MAINTAINER.md`](AE_MAINTAINER.md) 를 참고하세요.

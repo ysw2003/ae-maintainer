@@ -1,0 +1,21 @@
+# 실제 사용자 설정 (예시 파일 ae_maintainer.cfg.example 만 커밋)
+ae_maintainer.cfg
+
+# 편집기/OS 부산물
+*~
+*.swp
+*.bak
+*.old
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log
+credentials/
+secrets/
+.env
+*.key
+*.pem
+service-account*.json
+__pycache__/
+venv/

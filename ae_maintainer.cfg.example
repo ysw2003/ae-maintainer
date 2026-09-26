@@ -1,0 +1,35 @@
+# ae_maintainer.cfg 예시
+#   OC 컴퓨터에서 프로그램과 같은 폴더에 'ae_maintainer.cfg' 로 복사한 뒤 값을 고치세요.
+#   (이 파일 자체는 예시이며, 프로그램은 'ae_maintainer.cfg' 라는 이름만 읽습니다)
+#   주석(#)과 빈 줄은 무시됩니다. 코드는 실행되지 않습니다(단순 key=value).
+
+# 실행 모드: drive = OC가 직접 요청 / monitor = 읽기·표시만
+mode=drive
+
+# 요청 주기(초)
+interval=60
+
+# true = 관리 대상 슬롯의 유지기 자체 자동요청을 끄고 OC 단독으로 요청 (중복 방지)
+# false = 유지기 자체 기능과 병행 (중복 요청 가능)
+takeover=true
+
+# 요청량 규칙
+#   need  = min(배치, 부족분)      ※ 부족분을 넘지 않게 (권장)
+#   batch = 배치 값 고정
+#   fill  = 부족분을 배치 단위로 올림
+batchMode=need
+
+# true = 요청하지 않고 계산 결과만 표시
+dryRun=false
+
+# 아이템 이름(name) 매칭 실패 시 표시이름(label)으로 재검색
+labelFallback=true
+
+# 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구
+autoRestore=true
+
+# 유지기가 여러 대일 때 특정 어댑터 주소 지정 (비워두면 첫 번째 사용)
+# maintainerAddress=aaaa-1111-bbbb-2222
+
+# ME Controller 가 여러 대일 때 특정 어댑터 주소 지정
+# controllerAddress=cccc-3333-dddd-4444
