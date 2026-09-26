@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.5"
+local VERSION = "3.0"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -50,13 +50,12 @@ local CONFIG = {
                             -- "final"=그 CPU 의 최종 결과물일 때만 스킵
   skipIfMaintainer = true,  -- 유지기 자체가 그 슬롯 작업 중(isDone=false)이면 요청하지 않음
 
-  -- 응답 없는 요청 자동 중단
-  requestTimeout  = 60,   -- 요청 후 이 초 안에 결과물이 안 나오면 중단(+CPU 취소 시도). 0=비활성
-  stallCycles     = 2,    -- 요청 후 N번의 주기 동안 생산량이 늘지 않으면 정지로 보고 취소 (0=끔)
-  stallMinProgress = 1,   -- 진행으로 인정할 최소 증가량(개수/mB)
-  cancelOnTimeout = true, -- 타임아웃/정지 시 해당 AE CPU 작업 취소 시도
+  -- 정지 감지 (요청 루프 기준) — v3.0: 절대 시간 타임아웃 제거
+  stallCycles     = 2,    -- 요청 루프 N회 동안 '제작중 수치'가 그대로면 정지로 보고 취소 (0=끔)
+  stallMinProgress = 1,   -- (폴백) 보관량 기준일 때 진행으로 인정할 최소 증가량
+  cancelOnStall   = true, -- 정지 시 해당 AE CPU 작업 취소 시도
   cancelFallback  = "single", -- 취소 대상을 못 찾았을 때: "single"=사용 중 CPU가 1대뿐이면 취소 / "none"=취소 안 함
-  timeoutCooldown = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
+  stallCooldown   = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
   skipIfAnyCpuBusy = false, -- true=사용 중 CPU 가 있으면 모든 요청 보류(중복 방지 극대화)
 
   -- 화면
@@ -201,8 +200,8 @@ end
 local CFG_KEYS = {
   "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
   "skipIfCrafting", "cpuSkipScope", "skipIfMaintainer",
-  "requestTimeout", "cancelOnTimeout", "cancelFallback", "timeoutCooldown",
-  "stallCycles", "stallMinProgress", "skipIfAnyCpuBusy",
+  "stallCycles", "stallMinProgress", "cancelOnStall", "cancelFallback", "stallCooldown",
+  "skipIfAnyCpuBusy",
   "countdown", "view", "detailPerPage", "pageSize", "pageSeconds",
   "maxMaintainers", "bulkQuery",
 }
@@ -481,6 +480,27 @@ local function anyCpuBusySnap(snap)
   return false
 end
 
+-- CPU 안에서 그 품목의 "제작중 수치" (activeItems → storedItems → pendingItems 순)
+--   AE 크래프팅 GUI 의 "Crafting: 52" 에 해당하는 값. 반환: 수치, 목록이름, CPU라벨
+local function craftingAmount(snap, slot)
+  if type(snap) ~= "table" then return nil end
+  for _, e in ipairs(snap) do
+    for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
+      local list = e.lists[meth]
+      if list then
+        local total = 0
+        for _, st in ipairs(list) do
+          if stackMatches(slot, st) then
+            total = total + toInt(st.size or st.amount or 0)
+          end
+        end
+        if total > 0 then return total, meth, cpuLabel(e) end
+      end
+    end
+  end
+  return nil
+end
+
 -- 레시피(Craftable 값) 찾기
 local function findCraftable(mc, slot)
   local filter
@@ -547,19 +567,10 @@ local function pendingInfo(key, compact)
   local p = state.pending[key]
   if not p then return "" end
   if compact then return "*" end
-  local t = nowSeconds()
-  local elapsed = (t and p.startedAt) and math.floor(t - p.startedAt) or 0
   local parts = { "요청 " .. comma(p.amount) }
-  if p.produced and p.produced > 0 then
-    parts[#parts + 1] = string.format("생산 %s", comma(p.produced))
-  end
+  if p.progressText then parts[#parts + 1] = p.progressText end
   if (CONFIG.stallCycles or 0) > 0 then
-    parts[#parts + 1] = string.format("정지 %d/%d주기", p.stallCount or 0, CONFIG.stallCycles)
-  end
-  if CONFIG.requestTimeout and CONFIG.requestTimeout > 0 then
-    parts[#parts + 1] = string.format("%d/%d초", elapsed, CONFIG.requestTimeout)
-  else
-    parts[#parts + 1] = string.format("%d초", elapsed)
+    parts[#parts + 1] = string.format("정지 %d/%d회", p.stallCount or 0, CONFIG.stallCycles)
   end
   return "  [" .. table.concat(parts, " · ") .. "]"
 end
@@ -567,7 +578,7 @@ end
 -- 요청의 CPU 작업을 찾아 취소. 반환: cpu, why, canceled, res
 --   ① 요청 시 기록해 둔 CPU ② 그 품목이 포함된 CPU 재탐색 ③ (옵션) 사용 중 CPU 1대
 local function cancelCraft(ctx, p)
-  if not (CONFIG.cancelOnTimeout and ctx.mc) then return nil, nil, false, nil end
+  if not (CONFIG.cancelOnStall and ctx.mc) then return nil, nil, false, nil end
   local cpu, why = nil, nil
   if p.cpu then cpu, why = p.cpu, "요청 시 기록된 CPU" end
   local okc, cpus = pcall(ctx.mc.getCpus)
@@ -583,41 +594,6 @@ local function cancelCraft(ctx, p)
   if not cpu then return nil, nil, false, nil end
   local ok2, r = callValue(cpu, "cancel")
   return cpu, why, (ok2 and (r ~= false)), r
-end
-
--- 타임아웃 감시 (매 초). 응답 없는 요청은 중단하고 가능하면 CPU 작업도 취소.
-local function checkPending(ctx)
-  local t = nowSeconds()
-  if not t then return end
-  for key, p in pairs(state.pending) do
-    local timeout = CONFIG.requestTimeout or 0
-    local elapsed = p.startedAt and (t - p.startedAt) or 0
-    if timeout > 0 and elapsed >= timeout then
-      local wasDone = callBool(p.status, "isDone")
-      -- "결과물이 나왔는가" 확인: 재고가 목표(유지수량)에 도달했으면 완료로 본다
-      local satisfied = false
-      if not wasDone and ctx.mc and p.slot then
-        local stored = storedAmount(ctx.mc, p.slot, nil, nil)
-        if stored and p.slot.quantity and stored >= p.slot.quantity then satisfied = true end
-      end
-      state.pending[key] = nil
-      if wasDone or satisfied then
-        log("%s 슬롯%d: 요청 완료(%.0f초%s)", shortAddr(p.maint), p.slot.index, elapsed,
-          satisfied and ", 결과물 확인" or "")
-      else
-        local cpu, why, canceled, res = cancelCraft(ctx, p)
-        if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
-          state.cooldownUntil[key] = t + CONFIG.timeoutCooldown
-        end
-        log("%s 슬롯%d: %.0f초 동안 결과물이 나오지 않아 요청을 중단했습니다%s",
-          shortAddr(p.maint), p.slot.index, elapsed,
-          cpu and (canceled and (" (CPU 취소됨: " .. tostring(why) .. ")")
-                            or (" (CPU 취소 실패: " .. tostring(why) ..
-                                ", cancel()=" .. tostring(res) .. ")"))
-              or " (취소할 CPU를 찾지 못함)")
-      end
-    end
-  end
 end
 
 -- takeover: 유지기 자체의 자동요청을 끄고 OC 가 단독으로 요청하게 한다.
@@ -698,20 +674,34 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
           local deficit = s.quantity - stored
           local cooling = state.cooldownUntil[key] and t and (state.cooldownUntil[key] > t)
 
-          -- 진행/정지 판정: 직전 주기 대비 생산량이 늘었는지 확인
+          -- 정지 판정(요청 루프 기준): ① CPU 안 '제작중 수치'  ② 못 읽으면 네트워크 보관량
           local p = state.pending[key]
           local stalled = false
           if p and deficit > 0 then
-            if p.stockAtRequest == nil then p.stockAtRequest = stored end
-            p.produced = stored - p.stockAtRequest
-            if p.lastStock ~= nil then
-              if (stored - p.lastStock) >= (CONFIG.stallMinProgress or 1) then
-                p.stallCount = 0                                  -- 진행 중
-              else
-                p.stallCount = (p.stallCount or 0) + 1            -- 제자리
+            local craftAmt, craftHow, craftCpu = craftingAmount(cpuSnap, s)
+            if craftAmt ~= nil then
+              if p.lastCraft ~= nil then
+                if craftAmt ~= p.lastCraft then
+                  p.stallCount = 0                                     -- 수치가 변함 = 진행 중
+                else
+                  p.stallCount = (p.stallCount or 0) + 1               -- 그대로 = 제자리
+                end
               end
+              p.lastCraft = craftAmt
+              p.progressText = string.format("제작중 %s(%s, %s)",
+                comma(craftAmt), tostring(craftHow), tostring(craftCpu))
+            else
+              if p.stockAtRequest == nil then p.stockAtRequest = stored end
+              if p.lastStock ~= nil then
+                if (stored - p.lastStock) >= (CONFIG.stallMinProgress or 1) then
+                  p.stallCount = 0
+                else
+                  p.stallCount = (p.stallCount or 0) + 1
+                end
+              end
+              p.lastStock = stored
+              p.progressText = string.format("보관 %s(CPU 수치 못읽음)", comma(stored))
             end
-            p.lastStock = stored
             if (CONFIG.stallCycles or 0) > 0 and (p.stallCount or 0) >= CONFIG.stallCycles then
               stalled = true
             end
@@ -729,12 +719,11 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
             st.short = st.short + 1
             local cpu, why, canceled = cancelCraft(ctx, p)
             state.pending[key] = nil
-            if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
-              state.cooldownUntil[key] = t + CONFIG.timeoutCooldown
+            if CONFIG.stallCooldown and CONFIG.stallCooldown > 0 then
+              state.cooldownUntil[key] = t + CONFIG.stallCooldown
             end
-            log("%s 슬롯%d: %d주기 동안 진행이 없어(보관 %s · 생산 %s/%s) 요청을 중단했습니다%s",
-              shortAddr(m.addr), s.index, CONFIG.stallCycles, comma(stored),
-              comma(p.produced or 0), comma(p.amount),
+            log("%s 슬롯%d: %d회 루프 동안 진행이 없어(%s) 요청을 중단했습니다%s",
+              shortAddr(m.addr), s.index, CONFIG.stallCycles, tostring(p.progressText or ""),
               cpu and (canceled and (" (CPU 취소됨: " .. tostring(why) .. ")")
                                 or (" (CPU 취소 실패: " .. tostring(why) .. ")"))
                   or " (취소할 CPU를 찾지 못함)")
@@ -945,7 +934,8 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer 다중 지
   ae_maintainer help
 
 설정 파일: ./ae_maintainer.cfg
-  interval / batchMode / takeover / requestTimeout / bulkQuery ...
+  interval / batchMode / takeover / bulkQuery ...
+  stallCycles=N              요청 루프 N회 동안 '제작중 수치'가 그대로면 중단+CPU취소 (0=끔)
   view=detail|summary        화면 종류 (기본 detail: 유지기별 슬롯 5줄)
   detailPerPage=2            상세 화면에 한 번에 보여줄 유지기 수
   pageSize / pageSeconds     요약 화면 페이지 크기 / 자동 페이지 전환 간격(초)
@@ -1004,7 +994,6 @@ local function mainLoop(ctx, viewIdx)
       local step = math.min(1, remain)
       os.sleep(step)
       remain = remain - step
-      checkPending(ctx)
     end
   end
 end

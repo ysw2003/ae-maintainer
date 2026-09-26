@@ -114,12 +114,18 @@ end
 --     CPU_NOT_BUSY=1     isBusy=false, isActive=true (대기 상태 흉내)
 --     CPU_ITEM_IN_LIST=1 최종산출물이 아니라 storedItems 에만 품목이 있음
 --     CPU_OTHER_ITEM=1   CPU 가 다른 품목을 제작 중
+--     CPU_CRAFT_COUNT=N  요청 후 CPU 안에 그 품목이 N개 '제작중'으로 표시됨 (정지 감지 검증)
+--     CPU_CRAFT_DECREASE=1  제작중 수치가 매 조회마다 10씩 줄어듦 (= 진행 중)
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
 local CPU_NOT_BUSY = os.getenv("CPU_NOT_BUSY") == "1"
 local CPU_ITEM_IN_LIST = os.getenv("CPU_ITEM_IN_LIST") == "1"
 local CPU_OTHER_ITEM = os.getenv("CPU_OTHER_ITEM") == "1"
 local CPU_COUNT = tonumber(os.getenv("CPU_COUNT") or "1")
 local CPU_ITEM_INDEX = tonumber(os.getenv("CPU_ITEM_INDEX") or tostring(CPU_COUNT))
+local CPU_CRAFT_COUNT = tonumber(os.getenv("CPU_CRAFT_COUNT") or "0")
+local CPU_CRAFT_DECREASE = os.getenv("CPU_CRAFT_DECREASE") == "1"
+local craftCount = CPU_CRAFT_COUNT
+local craftTick = 0
 
 local function makeCpuValue(tag, hostItem)
   return wrapValue({
@@ -130,10 +136,23 @@ local function makeCpuValue(tag, hostItem)
       if CPU_OTHER_ITEM then
         return { name = "minecraft:diamond", label = "Diamond", damage = 0, size = 64 }
       end
-      if CPU_ITEM_IN_LIST then return nil end
+      if CPU_ITEM_IN_LIST or CPU_CRAFT_COUNT > 0 then return nil end
       return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
     end,
-    activeItems  = function(self) return {} end,
+    activeItems = function(self)
+      if not cpuBusy or not hostItem then return {} end
+      if CPU_CRAFT_COUNT > 0 then
+        if CPU_CRAFT_DECREASE then
+          -- 톱니형(52,42,32,22,12,52...) → 수치가 매번 변함 = '진행 중' 상황
+          craftCount = CPU_CRAFT_COUNT - (craftTick % 5) * 10
+          craftTick = craftTick + 1
+        end
+        if craftCount > 0 then
+          return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = craftCount } }
+        end
+      end
+      return {}
+    end,
     storedItems  = function(self)
       if cpuBusy and hostItem and CPU_ITEM_IN_LIST then
         return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 128 } }
