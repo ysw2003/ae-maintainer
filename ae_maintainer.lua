@@ -17,10 +17,12 @@
 --   · 어댑터 + 화면(선택)
 --
 -- 사용법 (OC 컴퓨터에서)
---   ae_maintainer                  설정대로 상시 실행 (요약 화면 + 페이지 전환)
+--   ae_maintainer                  설정대로 상시 실행 (기본: 상세 보기, 2대씩 페이지 전환)
 --   ae_maintainer monitor          읽기/표시만
 --   ae_maintainer drive [주기초]    직접 요청
---   ae_maintainer show <번호>       특정 유지기 1대만 상세 표시
+--   ae_maintainer summary          한 줄 요약 보기 (pageSize 대씩)
+--   ae_maintainer detail           상세 보기 (detailPerPage 대씩)
+--   ae_maintainer show <번호>       특정 유지기 1대만 고정 상세
 --   ae_maintainer list             전체 유지기/슬롯 상세 1회 출력
 --   ae_maintainer set <번호> <슬롯> <유지> <배치>
 --   ae_maintainer diag             진단 정보(모든 유지기 + 값 타입)
@@ -30,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.0"
+local VERSION = "2.1"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -54,6 +56,8 @@ local CONFIG = {
 
   -- 화면
   countdown = true,       -- 다음 주기까지 남은 시간을 1초마다 갱신
+  view      = "detail",   -- "detail"=유지기별 상세(슬롯 5줄) 페이지 | "summary"=한 줄 요약
+  detailPerPage = 2,      -- 상세 화면 한 페이지에 보여줄 유지기 수 (2 → 2대씩 5슬롯)
   pageSize  = 10,         -- 요약 화면 한 페이지에 보여줄 유지기 수
   pageSeconds = 10,       -- 자동 페이지 전환 간격(초). 0=전환 안 함
 
@@ -193,7 +197,8 @@ local CFG_KEYS = {
   "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
   "skipIfCrafting", "scanActiveItems", "skipIfMaintainer",
   "requestTimeout", "cancelOnTimeout", "timeoutCooldown",
-  "countdown", "pageSize", "pageSeconds", "maxMaintainers", "bulkQuery",
+  "countdown", "view", "detailPerPage", "pageSize", "pageSeconds",
+  "maxMaintainers", "bulkQuery",
 }
 
 local function ensureConfigFile(path)
@@ -756,14 +761,47 @@ local function buildDetail(ctx, st, remain)
   return out
 end
 
+-- 상세 페이지: 여러 대를 한 화면에 (기본 2대 × 슬롯 5줄)
+local function buildDetailPage(ctx, recs, page, remain)
+  local n = #ctx.maints
+  local per = math.max(1, CONFIG.detailPerPage or 2)
+  local pages = math.max(1, math.ceil(n / per))
+  page = ((page - 1) % pages) + 1
+  local from = (page - 1) * per + 1
+  local to = math.min(n, from + per - 1)
+  local out = {}
+  out[#out + 1] = string.format(
+    "== AE Maintainer %s | %s | 상세 %d~%d / %d대 | %d/%d 페이지 | 다음 주기 %d초 ==",
+    VERSION, ctx.drive and "DRIVE" or "MONITOR", from, to, n, page, pages, math.max(0, remain))
+  for i = from, to do
+    local m = ctx.maints[i]
+    local st = recs[m.addr]
+    out[#out + 1] = string.format(" #%d %s %s   부족 %d · 요청 %d · 제작 %d · 진행 %d",
+      i, shortAddr(m.addr), shortText(m.name or "-", 16),
+      st and st.short or 0, st and st.requested or 0, st and st.crafting or 0, st and st.pendingN or 0)
+    for k = 1, SLOT_COUNT do
+      out[#out + 1] = (st and st.lines[k]) or string.format("  %d -", k)
+    end
+  end
+  if to < n then
+    out[#out + 1] = string.format(" (%d초마다 다음 %d대로 넘어갑니다 · %d대 남음)",
+      CONFIG.pageSeconds or 10, per, n - to)
+  else
+    out[#out + 1] = string.format(" (마지막 페이지 · %d초마다 처음으로)", CONFIG.pageSeconds or 10)
+  end
+  return out
+end
+
 -- ============================== 7) 실행부 ===================================
 local HELP = [[
 ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer 다중 지원)
 
-  ae_maintainer                  설정대로 상시 실행 (요약 화면 + 자동 페이지 전환)
+  ae_maintainer                  설정대로 상시 실행 (기본: 상세 보기, 2대씩 페이지 전환)
   ae_maintainer monitor          읽기/표시만 (요청 안 함)
   ae_maintainer drive [주기초]    지정 주기(기본 60초)로 직접 요청
-  ae_maintainer show <번호>       특정 유지기 1대만 상세 표시
+  ae_maintainer summary          한 줄 요약 보기로 전환 (pageSize 대씩)
+  ae_maintainer detail           상세 보기로 전환 (detailPerPage 대씩)
+  ae_maintainer show <번호>       특정 유지기 1대만 고정 상세
   ae_maintainer list             전체 유지기/슬롯 상세 1회 출력
   ae_maintainer once             1회 계산/표시 (설정 변경 없음)
   ae_maintainer set <번호> <슬롯> <유지> <배치>
@@ -771,7 +809,10 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer 다중 지
   ae_maintainer help
 
 설정 파일: ./ae_maintainer.cfg
-  interval / batchMode / takeover / requestTimeout / pageSize / pageSeconds / bulkQuery ...
+  interval / batchMode / takeover / requestTimeout / bulkQuery ...
+  view=detail|summary        화면 종류 (기본 detail: 유지기별 슬롯 5줄)
+  detailPerPage=2            상세 화면에 한 번에 보여줄 유지기 수
+  pageSize / pageSeconds     요약 화면 페이지 크기 / 자동 페이지 전환 간격(초)
   name.<어댑터주소>=창고A    ← 유지기 별칭
 
 필요 컴포넌트
@@ -780,8 +821,12 @@ ae_maintainer VERSION  (GTNH 2.9.0-beta-3 / AE2FC ME Level Maintainer 다중 지
 ]]
 
 local function mainLoop(ctx, viewIdx)
-  log("%s 시작: 주기 %d초 · 유지기 %d대 (중단: Ctrl+C)",
-    ctx.drive and "DRIVE" or "MONITOR", toInt(CONFIG.interval), #ctx.maints)
+  local perPage = (ctx.view == "summary") and math.max(1, CONFIG.pageSize or 10)
+                                          or math.max(1, CONFIG.detailPerPage or 2)
+  log("%s 시작: 주기 %d초 · 유지기 %d대 · 보기=%s(%d대/페이지, %s초마다 전환) (중단: Ctrl+C)",
+    ctx.drive and "DRIVE" or "MONITOR", toInt(CONFIG.interval), #ctx.maints,
+    tostring(ctx.view), perPage,
+    (CONFIG.pageSeconds and CONFIG.pageSeconds > 0) and tostring(CONFIG.pageSeconds) or "자동전환없음")
   if not ctx.mc then
     log("경고: me_controller/me_interface 가 없어 보관량 조회/요청을 할 수 없습니다.")
   end
@@ -793,7 +838,7 @@ local function mainLoop(ctx, viewIdx)
     local firstDraw = true
     while true do
       if not viewIdx and CONFIG.pageSeconds and CONFIG.pageSeconds > 0
-         and #ctx.maints > (CONFIG.pageSize or 10) then
+         and #ctx.maints > perPage then
         local t = nowSeconds()
         if t and (t - lastFlip) >= CONFIG.pageSeconds then
           page = page + 1
@@ -803,10 +848,17 @@ local function mainLoop(ctx, viewIdx)
       local lines
       if viewIdx then
         local m = ctx.maints[viewIdx]
-        lines = m and buildDetail(ctx, recs[m.addr], remain)
-                     or buildSummary(ctx, recs, total, remain, page)
-      else
+        if m then
+          lines = buildDetail(ctx, recs[m.addr], remain)
+        elseif ctx.view == "summary" then
+          lines = buildSummary(ctx, recs, total, remain, page)
+        else
+          lines = buildDetailPage(ctx, recs, page, remain)
+        end
+      elseif ctx.view == "summary" then
         lines = buildSummary(ctx, recs, total, remain, page)
+      else
+        lines = buildDetailPage(ctx, recs, page, remain)
       end
       if firstDraw or remain <= 0 or (hasScreen and CONFIG.countdown) or (remain % 5 == 0) then
         drawLines(lines)
@@ -926,11 +978,15 @@ local function main(...)
   end
 
   local ctx = { maints = maints, mc = mc, mcAddr = mcAddr, mcKind = mcKind,
-                mcCount = mcCount, drive = (CONFIG.mode == "drive") }
+                mcCount = mcCount, drive = (CONFIG.mode == "drive"), view = CONFIG.view }
   local viewIdx = nil
 
   if cmd == "monitor" then
     ctx.drive = false
+  elseif cmd == "summary" then
+    ctx.view = "summary"
+  elseif cmd == "detail" then
+    ctx.view = "detail"
   elseif cmd == "drive" then
     ctx.drive = true
     if argv[2] then CONFIG.interval = tonumber(argv[2]) or CONFIG.interval end
