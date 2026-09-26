@@ -275,13 +275,11 @@ dryRun=false
 | `skipIfCrafting` | `true` | AE CPU 작업에 같은 품목이 있으면 새 요청 안 함 |
 | `cpuSkipScope` | `any` | `any`=CPU 의 최종산출물/보관/대기/제작중 어디에든 있으면 스킵(**사람이 요청한 것 포함**) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
-| `stallCycles` | `2` | **요청 루프 N회 동안 CPU 제작중 수치가 그대로면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔 |
-| `stallMinProgress` | `1` | (폴백) 보관량 기준 판정 시 진행 인정 최소 증가량 |
+| `stallCycles` | `2` | **요청 루프 N회 동안 CPU 제작중 수치가 그대로면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔 (재고량은 기준으로 쓰지 않음) |
 | `cancelOnStall` | `true` | 정지 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
 | `cancelFallback` | `single` | 취소 대상을 못 찾았을 때 `single`=사용 중 CPU 1대면 취소 / `none`=취소 안 함 |
 | `stallCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `skipIfAnyCpuBusy` | `false` | `true`=사용 중 CPU 가 하나라도 있으면 모든 요청 보류 |
-| `stallCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면 종류: `detail`(유지기별 슬롯 5줄) / `summary`(한 줄 요약) |
 | `detailPerPage` | `2` | 상세 화면 한 페이지당 유지기 수 (2 → 2대씩) |
@@ -307,19 +305,18 @@ dryRun=false
       - v2.4부터 **`isBusy` 여부와 무관하게** 모든 CPU 의 목록을 읽습니다(출력 막힘/재료 대기로 `isBusy=false` 인 CPU 도 포함). 스냅샷은 사이클당 1회만 읽습니다.
 6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 + **요청 시점 보관량** 기록)
 
-### 진행 정지 감지 → 자동 취소 (v3.0: 요청 루프 기준)
+### 진행 정지 감지 → 자동 취소 (v3.x: 요청 루프 + CPU 제작중 수치 기준)
 
-**절대 시간 타임아웃은 제거**했습니다. 대신 요청을 넣은 뒤 **매 요청 루프마다** 아래 값을 비교합니다.
+절대 시간 타임아웃은 없습니다. 요청을 넣은 뒤 **매 요청 루프마다** CPU 안 그 품목의
+**제작중 수치**(`activeItems` → `storedItems` → `pendingItems`, AE GUI 의 `Crafting: 52` 에 해당)를 비교합니다.
 
-| 판정 기준 | 읽는 값 |
-|---|---|
-| ① (우선) **CPU 안 제작중 수치** | `activeItems` → `storedItems` → `pendingItems` 에서 그 품목의 수량 합계 — AE GUI 의 `Crafting: 52` 에 해당 |
-| ② (폴백) 네트워크 보관량 | CPU 수치를 못 읽는 품목(예: 유체)은 기존처럼 보관량 비교 |
+> **네트워크 재고량은 판정에 쓰지 않습니다.** 재고는 소비/보충으로 수시로 크게 변하기 때문입니다(v3.1).
 
 | 상태 | 판정 | 동작 |
 |---|---|---|
-| 수치가 **변함**(증가/감소 무관) | 진행 중 | 정지 카운트 0으로 리셋, 재요청 없음 |
-| 수치가 **그대로** | 제자리 | 정지 카운트 +1 → `stallCycles` 도달 시 **즉시 중단 + CPU 취소** |
+| 제작중 수치가 **변함**(증가/감소 무관) | 진행 중 | 정지 카운트 0으로 리셋, 재요청 없음 |
+| 제작중 수치가 **그대로** | 제자리 | 정지 카운트 +1 → `stallCycles` 도달 시 **즉시 중단 + CPU 취소** |
+| CPU 안 수치를 **못 읽음**(유체 등) | 판정 불가 | **정지 감지 대상에서 제외** — 중단/취소하지 않음(화면에 `CPU 제작중 수치 없음(정지 감지 제외)`) |
 | 보관량 ≥ 유지수량 | 완료 | 요청 추적 해제(완료 로그) |
 
 예: copper wire 64개 요청 → CPU에 `Crafting: 52` 로 멈춤 →
@@ -350,12 +347,13 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
+| **v3.1 재고량 기준 제거** | `CPU_CRAFT_COUNT` 없이(=CPU 수치 못 읽음) 부분 납품 후 정지시킨 `PARTIAL_AFTER_REQUEST=1` + `stallCycles=2` → **취소 0건**, 화면에 `제작중 수치 없음(정지 감지 제외)` 표시(재고는 판정에 쓰지 않음). `CPU_CRAFT_COUNT=52` 고정 케이스는 그대로 2회 루프 후 취소 1건, `CPU_CRAFT_DECREASE=1`(진행 중)은 취소 0건 |
 | **v3.0 정지 감지(CPU 수치 기준)** | `CPU_CRAFT_COUNT=52`(고정) + `stallCycles=2`: `[요청 512 · 제작중 52(activeItems, CPU1 CPU #1) · 정지 1/2회]` → 2회 루프째 `2회 루프 동안 진행이 없어(제작중 52(activeItems, CPU1 CPU #1)) 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` |
-| **v3.0 진행 중이면 취소 안 함** | `CPU_CRAFT_DECREASE=1`(수치가 매 루프 52→42→32… 변함) → 그 슬롯은 **정지 0/2회 유지**(취소 없음). CPU 수치를 못 읽는 유체 슬롯만 보관량 폴백으로 정지 판정 |
+| **v3.0 진행 중이면 취소 안 함** | `CPU_CRAFT_DECREASE=1`(수치가 매 루프 52→42→32… 변함) → 그 슬롯은 **정지 0/2회 유지**(취소 없음) |
 | **v3.0 타임아웃 제거** | `requestTimeout`(절대 시간) 설정·코드 삭제(`cancelOnTimeout`→`cancelOnStall`, `timeoutCooldown`→`stallCooldown` 로 이름 변경) |
 | **v2.5 getCpus 구조 수정** | 하네스를 실제와 동일하게(`getCpus()` = 행 테이블 목록, 값은 `.cpu`) 바꾼 뒤: 품목이 **CPU#2** 에만 있어도 `AE 제작 중(중복 요청 안 함) finalOutput(CPU2 CPU #2)` / `storedItems(CPU2 CPU #2)` 로 스킵, `busy=false, active=true` 상태에서도 스킵, 신규 요청은 물 1건만 |
 | **v2.4 isBusy 무관 스캔** | `CPU_NOT_BUSY=1`(isBusy=false, isActive=true, `storedItems` 에만 품목) 재현 → 스킵, `diag` 에서도 `busy=false active=true` + `storedItems : 1개: …` 확인 |
-| **v2.3 정지 감지** | `PARTIAL_AFTER_REQUEST=1`(부분 납품 30개 후 정지) + `stallCycles=2`: `이전 요청 진행 중 [요청 512 · 정지 1/2주기 · 4/60초]` 로 재요청 없음(요청 총 2건 유지) → 2주기째 `2주기 동안 진행이 없어(보관 1,084 · 생산 60/512) 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` + mock `cancel()` 호출 확인 |
+| **v2.3 정지 감지** (재고 기준, v3.1에서 제거) | `PARTIAL_AFTER_REQUEST=1`(부분 납품 30개 후 정지) + `stallCycles=2`: `2주기 동안 진행이 없어(보관 1,084 · 생산 60/512) 요청을 중단했습니다` + mock `cancel()` 호출 확인 |
 | **v2.2.1 diag 강화** | `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력 (예: `storedItems : 1개: Machine Casing x128 [gregtech:gt.blockmachines]`) |
 | **v2.2 CPU 포함 스킵** | `CPU_ITEM_IN_LIST=1`(최종산출물에는 없고 `storedItems` 에만 있는 상황) → `list` 에서 `AE 제작 중(중복 요청 안 함)`, drive 에서 요청 1건(물)만 발생 |
 | **v2.2 타임아웃=결과물 기준** | `requestTimeout=3` 하네스: `aaa…0001 슬롯1: 3초 동안 결과물이 나오지 않아 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` / 다른 슬롯은 `(CPU 취소됨: 사용 중 CPU 1대(대상 특정 불가))` — mock `CPU cancel()` 호출 확인 |
@@ -402,7 +400,8 @@ dryRun=false
 | `레시피 없음(Not Found)` | AE2 패턴 미등록 / CPU·재료 부족 |
 | `슬롯 N: 60초 동안 완료되지 않아 요청을 중단했습니다 (해당 CPU를 못 찾아 취소 못 함…)` (v2.5 이하) | **v3.0에서 타임아웃 자체가 삭제**되었습니다. 이제 `stallCycles` 회 루프 동안 **CPU 제작중 수치가 그대로일 때만** 중단/취소합니다 |
 | `AE 제작 중(중복 요청 안 함)` 이 계속 뜸 | 의도된 동작입니다(`cpuSkipScope=any` — 사람이 요청한 작업도 포함). 최종 결과물만 기준으로 하려면 `cpuSkipScope=final`, 검사 자체를 끄려면 `skipIfCrafting=false` |
-| **타임아웃인데 CPU 취소가 안 됨** | v2.2에서 수정(요청 시 CPU 기록 → 재탐색 → 단일 CPU 폴백). 로그의 `(CPU 취소됨: …)` / `(취소할 CPU를 찾지 못함)` 로 결과를 확인하세요. AE CPU 가 여러 대인데 대상을 못 찾으면 `cancelFallback` 을 조정하세요 |
+| `CPU 제작중 수치 없음(정지 감지 제외)` 로 표시됨 | 그 슬롯 품목이 CPU의 `activeItems`/`storedItems`/`pendingItems` 에 없어 **정지 판정을 할 수 없는 상태**입니다(v3.1부터 재고량으로 대신 판정하지 않음). 멈춘 것으로 보이면 AE 크래프팅 상태 GUI에서 직접 취소하거나, `diag` 로 CPU 목록을 확인하세요 |
+| 재고가 그대로인데 취소가 안 됨 | 의도된 동작입니다(v3.1). **네트워크 재고량은 사용량에 따라 크게 변해 판정 기준으로 쓰지 않습니다.** CPU 안 `Crafting: N` 수치가 그대로일 때만 취소합니다 |
 | 취소했는데도 같은 품목이 계속 제작됨 | 유지기 자체가 다시 요청했거나(`takeover=false`), 다른 시스템이 요청한 경우입니다. `takeover=true` 확인 |
 | `요청 실패: request 호출 실패(table)` | **v1.3 이하 버그**(v1.4에서 수정). OC는 값의 메서드를 "호출 가능한 테이블"로 노출하는데, v1.3 이하는 함수인지 검사해 거부했습니다. v1.4로 갱신하세요 |
 | 설치 중 `attempt to call a table value (field 'close')` | **setup v1.1 이하 버그**(v1.2에서 수정). `handle.close()` 는 이 환경에서 호출 불가이며 호출할 필요도 없습니다(EOF에서 자동 종료) |
@@ -414,7 +413,8 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
-| v3.0 | 2026-09-26 | **타임아웃 제거 + 정지 감지를 CPU 수치 기준으로**: 절대 시간(`requestTimeout`) 감시를 삭제하고, 요청 루프마다 **CPU 안 그 품목의 제작중 수치**(`activeItems`→`storedItems`→`pendingItems`, AE GUI의 `Crafting: N` 에 해당)를 비교 → `stallCycles`(기본 2회 루프) 동안 **그대로면** 즉시 중단 + CPU 취소(수치가 변하면 진행 중으로 보고 취소하지 않음). CPU 수치를 못 읽는 품목은 보관량 비교로 폴백. `cancelOnTimeout`→`cancelOnStall`, `timeoutCooldown`→`stallCooldown` 로 키 이름 변경 |
+| v3.1 | 2026-09-26 | **정지 판정에서 네트워크 재고량 제거**: 재고는 소비·보충으로 수시로 크게 변해 판정 기준으로 쓸 수 없어, 보관량 비교 폴백(및 `stallMinProgress` 설정)을 **삭제**. 이제 정지 판정은 **CPU 안 제작중 수치(`Crafting: N`) 단일 기준**이며, 그 수치를 읽을 수 없는 품목(유체 등)은 **정지 감지 대상에서 제외**(화면에 `CPU 제작중 수치 없음(정지 감지 제외)` 표시). 작업 완료/취소 판정은 추적 중인 작업 상태 객체(`isDone`/`isComputing`)가 계속 담당 |
+| v3.0 | 2026-09-26 | **타임아웃 제거 + 정지 감지를 CPU 수치 기준으로**: 절대 시간(`requestTimeout`) 감시를 삭제하고, 요청 루프마다 **CPU 안 그 품목의 제작중 수치**(`activeItems`→`storedItems`→`pendingItems`, AE GUI의 `Crafting: N` 에 해당)를 비교 → `stallCycles`(기본 2회 루프) 동안 **그대로면** 즉시 중단 + CPU 취소(수치가 변하면 진행 중으로 보고 취소하지 않음). `cancelOnTimeout`→`cancelOnStall`, `timeoutCooldown`→`stallCooldown` 로 키 이름 변경 |
 | v2.5 | 2026-09-26 | **중복 요청·취소 실패의 진짜 원인 수정**: GTNH OpenComputers 소스 확인 결과 **`getCpus()` 는 CPU 값 배열이 아니라 "행 테이블" 배열**이고 실제 값은 **`.cpu` 필드**에 있습니다(`{name, storage, coprocessors, busy, cpu}` — 설치된 jar 바이트코드로 키 확인). 이전 버전은 행을 값으로 착각해 `row.isBusy()` 같은 없는 메서드를 호출 → **모든 CPU 를 판독 실패로 건너뛰어** 중복 요청이 계속 들어가고 취소도 못 했습니다. v2.5는 `.cpu` 를 꺼내 검사하고, 행의 `name`(CPU #1 …)을 스킵/취소 로그에 표시합니다 |
 | v2.4 | 2026-09-26 | **CPU 스캔에서 `isBusy()` 조건 제거**: AE2 는 **출력 막힘/재료 대기 상태에서 `isBusy=false`, `isActive=true`** 가 될 수 있어, 그때 그 품목이 CPU 안에 있는데도 감지가 안 되는 문제를 완화. 모든 CPU 의 `finalOutput`·3개 목록을 사이클당 1회 스냅샷으로 읽음. `skipIfAnyCpuBusy` 도 busy/active 둘 다 반영 |
 | v2.3 | 2026-09-26 | **진행 정지 감지 → 자동 취소**: 요청 시점·직전 주기의 보관량을 기록해 매 주기 비교 → `stallCycles`(기본 2주기) 동안 생산량이 늘지 않으면 즉시 중단 + CPU 취소(예: 64개 요청 중 30개만 나오고 멈춘 경우). 화면에 `생산 30/64 · 정지 1/2주기` 표시. **중복 요청 방지 보강**: 상태 객체를 못 읽어도 기록된 CPU가 busy면 진행 중으로 간주, `skipIfAnyCpuBusy` 옵션 추가 |

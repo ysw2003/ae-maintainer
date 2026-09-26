@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "3.0"
+local VERSION = "3.1"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -50,9 +50,8 @@ local CONFIG = {
                             -- "final"=그 CPU 의 최종 결과물일 때만 스킵
   skipIfMaintainer = true,  -- 유지기 자체가 그 슬롯 작업 중(isDone=false)이면 요청하지 않음
 
-  -- 정지 감지 (요청 루프 기준) — v3.0: 절대 시간 타임아웃 제거
-  stallCycles     = 2,    -- 요청 루프 N회 동안 '제작중 수치'가 그대로면 정지로 보고 취소 (0=끔)
-  stallMinProgress = 1,   -- (폴백) 보관량 기준일 때 진행으로 인정할 최소 증가량
+  -- 정지 감지 (요청 루프 기준) — v3.x: 절대 시간 타임아웃 없음
+  stallCycles     = 2,    -- 요청 루프 N회 동안 'CPU 제작중 수치'가 그대로면 정지로 보고 취소 (0=끔)
   cancelOnStall   = true, -- 정지 시 해당 AE CPU 작업 취소 시도
   cancelFallback  = "single", -- 취소 대상을 못 찾았을 때: "single"=사용 중 CPU가 1대뿐이면 취소 / "none"=취소 안 함
   stallCooldown   = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
@@ -200,7 +199,7 @@ end
 local CFG_KEYS = {
   "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
   "skipIfCrafting", "cpuSkipScope", "skipIfMaintainer",
-  "stallCycles", "stallMinProgress", "cancelOnStall", "cancelFallback", "stallCooldown",
+  "stallCycles", "cancelOnStall", "cancelFallback", "stallCooldown",
   "skipIfAnyCpuBusy",
   "countdown", "view", "detailPerPage", "pageSize", "pageSeconds",
   "maxMaintainers", "bulkQuery",
@@ -528,7 +527,7 @@ local function findCraftable(mc, slot)
   return nil
 end
 
--- ==================== 4) 상태(요청 추적 / 타임아웃 / takeover) ==============
+-- ==================== 4) 상태(요청 추적 / 정지 감지·취소 / takeover) ==============
 local state = {
   pending = {},        -- [addr#slot] = { status=, amount=, slot=, maint=, startedAt= }
   cooldownUntil = {},  -- [addr#slot] = 재요청 가능 시각
@@ -569,7 +568,7 @@ local function pendingInfo(key, compact)
   if compact then return "*" end
   local parts = { "요청 " .. comma(p.amount) }
   if p.progressText then parts[#parts + 1] = p.progressText end
-  if (CONFIG.stallCycles or 0) > 0 then
+  if (CONFIG.stallCycles or 0) > 0 and p.lastCraft ~= nil then
     parts[#parts + 1] = string.format("정지 %d/%d회", p.stallCount or 0, CONFIG.stallCycles)
   end
   return "  [" .. table.concat(parts, " · ") .. "]"
@@ -674,7 +673,8 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
           local deficit = s.quantity - stored
           local cooling = state.cooldownUntil[key] and t and (state.cooldownUntil[key] > t)
 
-          -- 정지 판정(요청 루프 기준): ① CPU 안 '제작중 수치'  ② 못 읽으면 네트워크 보관량
+          -- 정지 판정(요청 루프 기준): CPU 안 '제작중 수치'만 본다.
+          --   네트워크 재고량은 사용량에 따라 크게 출렁이므로 판정 기준으로 쓰지 않는다(v3.1).
           local p = state.pending[key]
           local stalled = false
           if p and deficit > 0 then
@@ -691,16 +691,10 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
               p.progressText = string.format("제작중 %s(%s, %s)",
                 comma(craftAmt), tostring(craftHow), tostring(craftCpu))
             else
-              if p.stockAtRequest == nil then p.stockAtRequest = stored end
-              if p.lastStock ~= nil then
-                if (stored - p.lastStock) >= (CONFIG.stallMinProgress or 1) then
-                  p.stallCount = 0
-                else
-                  p.stallCount = (p.stallCount or 0) + 1
-                end
-              end
-              p.lastStock = stored
-              p.progressText = string.format("보관 %s(CPU 수치 못읽음)", comma(stored))
+              -- 수치를 못 읽는 품목(유체 등)·CPU에 없는 품목은 정지 감지 대상에서 제외
+              p.lastCraft = nil
+              p.stallCount = 0
+              p.progressText = "CPU 제작중 수치 없음(정지 감지 제외)"
             end
             if (CONFIG.stallCycles or 0) > 0 and (p.stallCount or 0) >= CONFIG.stallCycles then
               stalled = true
@@ -736,7 +730,7 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
           elseif cooling then
             st.short = st.short + 1
             st.waiting = st.waiting + 1
-            st.lines[i] = head .. string.format("  보관 %-11s 타임아웃 후 대기 %d초",
+            st.lines[i] = head .. string.format("  보관 %-11s 정지 후 대기 %d초",
               comma(stored), math.floor(state.cooldownUntil[key] - t))
           elseif CONFIG.skipIfMaintainer and not s.isDone then
             st.short = st.short + 1
@@ -766,13 +760,12 @@ local function processMaintainer(ctx, m, items, fluids, cpuSnap, st)
               else
                 local ok, stt = callValue(craftable, "request", amount)
                 if ok then
-                  -- 요청 직후 그 작업을 담당하는 CPU 참조를 확보해 둔다(타임아웃 취소용)
+                  -- 요청 직후 그 작업을 담당하는 CPU 참조를 확보해 둔다(정지 시 취소용)
                   local cpuRef = nil
                   local okc, fresh = pcall(ctx.mc.getCpus)
                   if okc then cpuRef = findCraftingCpuSnap(buildCpuSnapshot(fresh), s, true) end
                   state.pending[key] = { status = stt, amount = amount, slot = s,
-                                         maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef,
-                                         stockAtRequest = stored, lastStock = stored }
+                                         maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef }
                   state.cooldownUntil[key] = nil
                   st.requested = st.requested + 1
                   st.pendingN = st.pendingN + 1
