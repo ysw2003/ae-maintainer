@@ -104,43 +104,64 @@ function mcObj.getCraftables(filter)
   return { craftable }
 end
 
--- ---- Crafting CPU 흉내 (getCpus) ---- (값 = 프록시 테이블)
---   CPU_BUSY_MATCH=1  : 처음부터 CPU 가 사용 중
---   CPU_NOT_BUSY=1    : isBusy=false, isActive=true (출력 막힘/재료 대기 상태 흉내 — 제보된 증상)
---   CPU_ITEM_IN_LIST=1: 최종산출물로는 안 보이고 storedItems 에만 우리 품목이 있는 상황
---   CPU_OTHER_ITEM=1  : CPU 가 다른 품목을 제작 중(우리 품목 없음 → 단일 CPU 폴백 검증)
+-- ---- Crafting CPU 흉내 (getCpus) ----
+--   ★ 실제 구조 그대로: getCpus() 는 "행 테이블" 목록이며 값은 .cpu 필드에 있다
+--       { name=, storage=, coprocessors=, busy=, cpu=<값> }
+--   환경변수
+--     CPU_COUNT=N        CPU 대수 (기본 1)
+--     CPU_ITEM_INDEX=N   그 품목을 가진 CPU 번호 (기본: 마지막 CPU)
+--     CPU_BUSY_MATCH=1   처음부터 사용 중
+--     CPU_NOT_BUSY=1     isBusy=false, isActive=true (대기 상태 흉내)
+--     CPU_ITEM_IN_LIST=1 최종산출물이 아니라 storedItems 에만 품목이 있음
+--     CPU_OTHER_ITEM=1   CPU 가 다른 품목을 제작 중
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
 local CPU_NOT_BUSY = os.getenv("CPU_NOT_BUSY") == "1"
 local CPU_ITEM_IN_LIST = os.getenv("CPU_ITEM_IN_LIST") == "1"
 local CPU_OTHER_ITEM = os.getenv("CPU_OTHER_ITEM") == "1"
-local cpuObj = wrapValue({
-  isBusy  = function(self) if CPU_NOT_BUSY then return false end return cpuBusy end,
-  isActive = function(self) return cpuBusy end,
-  finalOutput = function(self)
-    if not cpuBusy then return nil end
-    if CPU_ITEM_IN_LIST or CPU_OTHER_ITEM then
+local CPU_COUNT = tonumber(os.getenv("CPU_COUNT") or "1")
+local CPU_ITEM_INDEX = tonumber(os.getenv("CPU_ITEM_INDEX") or tostring(CPU_COUNT))
+
+local function makeCpuValue(tag, hostItem)
+  return wrapValue({
+    isBusy  = function(self) if CPU_NOT_BUSY then return false end return cpuBusy end,
+    isActive = function(self) return cpuBusy end,
+    finalOutput = function(self)
+      if not cpuBusy or not hostItem then return nil end
       if CPU_OTHER_ITEM then
         return { name = "minecraft:diamond", label = "Diamond", damage = 0, size = 64 }
       end
-      return nil
-    end
-    return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
-  end,
-  activeItems  = function(self) return {} end,
-  storedItems  = function(self)
-    if cpuBusy and CPU_ITEM_IN_LIST then
-      return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 128 } }
-    end
-    return {}
-  end,
-  pendingItems = function(self) return {} end,
-  cancel = function(self)
-    cpuCanceled = true
-    io.write("   >> (mock) CPU cancel() 호출됨\n")
-    return true
-  end,
-})
-function mcObj.getCpus() return { cpuObj } end
+      if CPU_ITEM_IN_LIST then return nil end
+      return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
+    end,
+    activeItems  = function(self) return {} end,
+    storedItems  = function(self)
+      if cpuBusy and hostItem and CPU_ITEM_IN_LIST then
+        return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 128 } }
+      end
+      return {}
+    end,
+    pendingItems = function(self) return {} end,
+    cancel = function(self)
+      cpuCanceled = true
+      io.write(string.format("   >> (mock) %s.cancel() 호출됨\n", tag))
+      return true
+    end,
+  })
+end
+
+function mcObj.getCpus()
+  local rows = {}
+  for i = 1, CPU_COUNT do
+    rows[#rows + 1] = {
+      name = "CPU #" .. i,
+      storage = 1024,
+      coprocessors = i - 1,
+      busy = CPU_NOT_BUSY and false or cpuBusy,
+      cpu = makeCpuValue("cpu" .. i, i == CPU_ITEM_INDEX),
+    }
+  end
+  return rows
+end
 
 -- ---- level_maintainer 컴포넌트 흉내 (여러 대) ----
 --   MAINTAINER_COUNT=1(기본) | 3 등

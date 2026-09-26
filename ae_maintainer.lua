@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.4"
+local VERSION = "2.5"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -410,20 +410,34 @@ local function stackMatches(slot, st)
 end
 
 -- 사이클당 1회: 모든 CPU 의 상태/내용을 미리 읽어 스냅샷으로 만든다.
---   busy(=활발히 제작 중) 여부와 **무관하게** 목록을 읽는다.
---   (AE2 는 출력 막힘/재료 대기 상태에서 isBusy=false, isActive=true 일 수 있음)
+--   ★ getCpus() 는 "표(row) 목록"을 돌려준다 (설치된 jar 실측 키):
+--       { name=, storage=, coprocessors=, busy=, cpu=<실제 CPU 값> }
+--     실제 값은 entry.cpu 이며, busy 는 테이블의 boolean 필드다.
+--   ★ busy(=활발히 제작 중) 여부와 무관하게 목록을 읽는다.
+--     (AE2 는 출력 막힘/재료 대기 상태에서 isBusy=false, isActive=true 일 수 있음)
 local function buildCpuSnapshot(cpus)
   local snap = {}
   if type(cpus) ~= "table" then return snap end
-  for i, cpu in ipairs(cpus) do
-    local e = { idx = i, cpu = cpu,
-                busy = callBool(cpu, "isBusy") and true or false,
-                active = callBool(cpu, "isActive") and true or false,
-                final = nil, lists = {} }
-    local okf, final = callValue(cpu, "finalOutput")
+  for i, raw in ipairs(cpus) do
+    local e = { idx = i, value = raw, name = nil, busy = nil, active = false, final = nil, lists = {} }
+    if type(raw) == "table" then
+      if raw.cpu ~= nil then
+        e.value = raw.cpu                     -- 표준 구조: 값은 .cpu 필드
+        e.name = raw.name
+        e.storage = raw.storage
+        e.coprocessors = raw.coprocessors
+        if raw.busy ~= nil then e.busy = (raw.busy == true) end
+      elseif raw.name ~= nil or raw.busy ~= nil then
+        -- 값 자체도 테이블인 변형 구조(구버전/모드 호환): 그대로 사용
+        e.name = raw.name
+      end
+    end
+    if e.busy == nil then e.busy = (callBool(e.value, "isBusy") == true) end
+    e.active = (callBool(e.value, "isActive") == true)
+    local okf, final = callValue(e.value, "finalOutput")
     if okf and type(final) == "table" then e.final = final end
     for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
-      local ok, list = callValue(cpu, meth)
+      local ok, list = callValue(e.value, meth)
       if ok and type(list) == "table" then e.lists[meth] = list end
     end
     snap[#snap + 1] = e
@@ -431,13 +445,17 @@ local function buildCpuSnapshot(cpus)
   return snap
 end
 
--- 스냅샷에서 이 품목을 가진 CPU 찾기. 반환: cpu, 이유
+local function cpuLabel(e)
+  return string.format("CPU%d%s", e.idx, e.name and (" " .. tostring(e.name)) or "")
+end
+
+-- 스냅샷에서 이 품목을 가진 CPU 찾기. 반환: 값(취소용), 이유
 local function findCraftingCpuSnap(snap, slot, force)
   if not (force or CONFIG.skipIfCrafting) then return nil end
   if type(snap) ~= "table" then return nil end
   for _, e in ipairs(snap) do
     if e.final and stackMatches(slot, e.final) then
-      return e.cpu, string.format("finalOutput(CPU%d)", e.idx)
+      return e.value, string.format("finalOutput(%s)", cpuLabel(e))
     end
     if CONFIG.cpuSkipScope ~= "final" then
       for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
@@ -445,7 +463,7 @@ local function findCraftingCpuSnap(snap, slot, force)
         if list then
           for _, st in ipairs(list) do
             if stackMatches(slot, st) then
-              return e.cpu, string.format("%s(CPU%d)", meth, e.idx)
+              return e.value, string.format("%s(%s)", meth, cpuLabel(e))
             end
           end
         end
@@ -558,7 +576,7 @@ local function cancelCraft(ctx, p)
   if not cpu and CONFIG.cancelFallback == "single" then
     local busy = {}
     for _, e in ipairs(snap) do
-      if e.busy or e.active then busy[#busy + 1] = e.cpu end
+      if e.busy or e.active then busy[#busy + 1] = e.value end
     end
     if #busy == 1 then cpu, why = busy[1], "사용 중 CPU 1대(대상 특정 불가)" end
   end
@@ -1059,44 +1077,36 @@ local function main(...)
       local ok5, cpus = pcall(mc.getCpus)
       print(string.format("CPU 목록    : ok=%s type=%s count=%s", tostring(ok5), type(cpus),
         (type(cpus) == "table") and tostring(#cpus) or "?"))
+      -- getCpus() 는 표(row) 목록: {name, storage, coprocessors, busy, cpu=값}
       if type(cpus) == "table" and cpus[1] then
-        local cpu0 = cpus[1]
-        print(string.format("CPU 값 형태 : type=%s / .isBusy=%s / .finalOutput=%s / .cancel=%s",
-          type(cpu0), type(cpu0.isBusy), type(cpu0.finalOutput), type(cpu0.cancel)))
+        local raw = cpus[1]
+        print(string.format("  항목 구조: type=%s / .name=%s / .busy=%s / .storage=%s / .coprocessors=%s / .cpu=%s",
+          type(raw), type(raw and raw.name), type(raw and raw.busy), type(raw and raw.storage),
+          type(raw and raw.coprocessors), type(raw and raw.cpu)))
       end
-      -- CPU 별로 지금 만들고 있는 것 / 안에 들어 있는 것을 그대로 보여준다
-      if type(cpus) == "table" then
-        local function stackText(st)
-          if type(st) ~= "table" then return "?" end
-          local cnt = st.size or st.amount or 0
-          return string.format("%s x%s [%s]", tostring(st.label or st.name), comma(cnt), tostring(st.name))
-        end
-        local function listText(cpu, meth, maxN)
-          local ok, list = callValue(cpu, meth)
-          if not ok then return "읽기 실패: " .. tostring(list) end
-          if type(list) ~= "table" then return "없음" end
-          if #list == 0 then return "0개" end
-          local out = {}
-          for k = 1, math.min(#list, maxN) do out[#out + 1] = stackText(list[k]) end
-          return string.format("%d개: %s%s", #list, table.concat(out, " | "),
-            (#list > maxN) and " ..." or "")
-        end
-        local function finalText(cpu)
-          local ok, st = callValue(cpu, "finalOutput")
-          if not ok then return "읽기 실패: " .. tostring(st) end
-          if type(st) ~= "table" then return "없음(nil)" end
-          if st.name then return stackText(st) end          -- 단일 스택으로 오는 경우
-          if #st == 0 then return "없음(빈 테이블)" end
-          return listText(cpu, "finalOutput", 1)            -- 배열로 오는 경우 대비
-        end
-        for ci, cpu in ipairs(cpus) do
-          print(string.format("  CPU%d busy=%s active=%s", ci,
-            tostring(callBool(cpu, "isBusy")), tostring(callBool(cpu, "isActive"))))
-          print("       finalOutput : " .. finalText(cpu))
-          print("       activeItems : " .. listText(cpu, "activeItems", 3))
-          print("       pendingItems: " .. listText(cpu, "pendingItems", 3))
-          print("       storedItems : " .. listText(cpu, "storedItems", 3))
-        end
+      local snap = buildCpuSnapshot(cpus)
+      local function stackText(st)
+        if type(st) ~= "table" then return "?" end
+        return string.format("%s x%s [%s]", tostring(st.label or st.name),
+          comma(st.size or st.amount or 0), tostring(st.name))
+      end
+      local function listText(list)
+        if list == nil then return "읽기 실패/없음" end
+        if #list == 0 then return "0개" end
+        local out = {}
+        for k = 1, math.min(#list, 3) do out[#out + 1] = stackText(list[k]) end
+        return string.format("%d개: %s%s", #list, table.concat(out, " | "), (#list > 3) and " ..." or "")
+      end
+      for _, e in ipairs(snap) do
+        print(string.format("  %s  busy=%s active=%s storage=%s copro=%s", cpuLabel(e),
+          tostring(e.busy), tostring(e.active), tostring(e.storage), tostring(e.coprocessors)))
+        print("       finalOutput : " .. (e.final and stackText(e.final) or "없음(nil)"))
+        print("       activeItems : " .. listText(e.lists.activeItems))
+        print("       pendingItems: " .. listText(e.lists.pendingItems))
+        print("       storedItems : " .. listText(e.lists.storedItems))
+      end
+      if #snap == 0 then
+        print("  (CPU 없음 — 어댑터가 ME Controller/Interface 에 붙어 있고 그 네트워크에 크래프팅 CPU 가 있어야 합니다)")
       end
     end
     return

@@ -120,16 +120,45 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 > v1.2 는 `finalOutput()` 을 슬롯 품목과 비교해 "이미 제작 중"을 판단하고, 타임아웃 시 그 CPU 를 `cancel()` 합니다.
 > 주의: 취소는 **그 품목을 제작 중인 CPU 의 작업**을 끊습니다. 같은 CPU 작업에 다른 산출물이 함께 있다면 같이 중단될 수 있습니다.
 
-**CPU 안에서 지금 무엇을 만드는지 읽을 수 있나?** → **읽을 수 있습니다.** 위 4가지(`finalOutput`, `activeItems`, `pendingItems`, `storedItems`)가
-그대로 Lua 테이블(스택 목록)로 넘어옵니다. 다만 아래 한계가 있습니다.
+### `getCpus()` 반환 구조 (v2.5에서 바로잡은 핵심)
+
+`getCpus()` 는 **CPU 값의 배열이 아니라 "행(row) 테이블"의 배열**을 돌려줍니다. 실제 CPU 값은 각 행의 **`.cpu` 필드**에 있습니다.
+(출처: GTNH OpenComputers `NetworkControl.scala` + 설치된 `OpenComputers-1.12.61-GTNH.jar` 바이트코드에서 키 확인)
+
+```scala
+def getCpus(context, args) = {
+  val buffer = new mutable.ListBuffer[Map[String, Any]]
+  tile.getProxy.getCrafting.getCpus.foreach(cpu => {
+    buffer.append(Map(
+      "name" -> cpu.getName, "storage" -> cpu.getAvailableStorage,
+      "coprocessors" -> cpu.getCoProcessors, "busy" -> cpu.isBusy,
+      "cpu" -> new Cpu(tile, ...)          // ← 실제 값
+    ))
+  })
+  buffer.result()
+}
+```
+
+| 행 필드 | 형식 | 의미 |
+|---|---|---|
+| `name` | string | CPU 이름(예: `CPU #1`) — 화면 표시에 사용 |
+| `storage` / `coprocessors` | number | 저장량 / 코프로세서 수 |
+| `busy` | boolean | 그 시점의 `cpu.isBusy` |
+| **`cpu`** | 값(userdata) | **실제 CPU 값** — 여기에 `finalOutput()`/`activeItems()`/`storedItems()`/`pendingItems()`/`cancel()`, `isActive()`, `isBusy()` 가 있음 |
+
+> v2.4 이하 버그: 행 테이블을 값으로 착각해 `row.isBusy()` 같은 없는 메서드를 호출 → **모든 CPU 가 "판독 실패"로 건너뛰어져**
+> 중복 요청이 계속 들어가고 취소도 실패했습니다. v2.5는 `.cpu` 를 꺼내 검사합니다.
+> `ae_maintainer diag` 로 `항목 구조: type=table / .name=string / .busy=boolean / .cpu=table` 과 CPU별 내용을 확인할 수 있습니다.
+
+### CPU 에서 읽을 수 있는 것 / 한계
 
 | 한계 | 설명 |
 |---|---|
 | 진행률/남은 시간 | 제공되지 않습니다(스택 목록과 busy 여부만) |
-| CPU 이름/인덱스 | Lua 콜백이 없어 **목록 순서(CPU1, CPU2…)** 로만 구분합니다 |
+| CPU 이름 | 행 테이블의 `name`(예: `CPU #1`)으로 표시합니다 (값 자체에는 이름 콜백이 없음) |
 | `finalOutput()` | CPU 구조에 **크래프팅 모니터 타일**이 있어야 값이 나옵니다("No crafting monitor" 경로). 없으면 `nil`/오류 → 프로그램은 목록 검사로 폴백 |
 | 값 형식 | 아이템은 `{name,label,damage,size}`, 유체는 `{name,label,amount}` (AE2FC 유체 제작 포함) |
-| 확인 방법 | **`ae_maintainer diag`** → CPU별로 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력합니다 |
+| 확인 방법 | **`ae_maintainer diag`** → 행 구조 + CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력 |
 
 ### 값(userdata) 메서드 호출 규약 (v1.4에서 수정한 핵심)
 
@@ -274,6 +303,7 @@ dryRun=false
    2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
    3. 유지기 자체가 그 슬롯 작업 중(`isDone=false`) → 건너뜀
    4. **AE CPU 작업에 그 품목이 포함**(`cpuSkipScope=any`: `finalOutput` + `storedItems`/`pendingItems`/`activeItems`) → 건너뜀 (사람이 요청한 작업이어도 동일)
+      - v2.5부터 `getCpus()` 의 **행 테이블에서 `.cpu` 값**을 꺼내 검사합니다(이전에는 행을 값으로 착각해 전부 건너뜀).
       - v2.4부터 **`isBusy` 여부와 무관하게** 모든 CPU 의 목록을 읽습니다(출력 막힘/재료 대기로 `isBusy=false` 인 CPU 도 포함). 스냅샷은 사이클당 1회만 읽습니다.
 6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 + **요청 시점 보관량** 기록)
 
@@ -317,7 +347,8 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
-| **v2.4 isBusy 무관 스캔** | `CPU_NOT_BUSY=1`(isBusy=false, isActive=true, `storedItems` 에만 품목) 재현 → `AE 제작 중(중복 요청 안 함) storedItems(CPU1)` 로 스킵, drive 에서 요청 1건(물)만 발생. `diag` 에서도 `CPU1 busy=false active=true` + `storedItems : 1개: …` 확인 |
+| **v2.5 getCpus 구조 수정** | 하네스를 실제와 동일하게(`getCpus()` = 행 테이블 목록, 값은 `.cpu`) 바꾼 뒤: 품목이 **CPU#2** 에만 있어도 `AE 제작 중(중복 요청 안 함) finalOutput(CPU2 CPU #2)` / `storedItems(CPU2 CPU #2)` 로 스킵, `busy=false, active=true` 상태에서도 스킵, 신규 요청은 물 1건만. 타임아웃 취소/정지 감지/3대 유지기도 모두 정상 |
+| **v2.4 isBusy 무관 스캔** | `CPU_NOT_BUSY=1`(isBusy=false, isActive=true, `storedItems` 에만 품목) 재현 → 스킵, `diag` 에서도 `busy=false active=true` + `storedItems : 1개: …` 확인 |
 | **v2.3 정지 감지** | `PARTIAL_AFTER_REQUEST=1`(부분 납품 30개 후 정지) + `stallCycles=2`: `이전 요청 진행 중 [요청 512 · 정지 1/2주기 · 4/60초]` 로 재요청 없음(요청 총 2건 유지) → 2주기째 `2주기 동안 진행이 없어(보관 1,084 · 생산 60/512) 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` + mock `cancel()` 호출 확인 |
 | **v2.2.1 diag 강화** | `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력 (예: `storedItems : 1개: Machine Casing x128 [gregtech:gt.blockmachines]`) |
 | **v2.2 CPU 포함 스킵** | `CPU_ITEM_IN_LIST=1`(최종산출물에는 없고 `storedItems` 에만 있는 상황) → `list` 에서 `AE 제작 중(중복 요청 안 함)`, drive 에서 요청 1건(물)만 발생 |
@@ -377,7 +408,8 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
-| v2.4 | 2026-09-26 | **중복 요청 근본 수정**: CPU 스캔에서 `isBusy()` 조건을 제거 — AE2 는 **출력 막힘/재료 대기 상태에서 `isBusy=false`, `isActive=true`** 가 될 수 있어, 이때 그 품목이 CPU 안에 있는데도 감지가 안 되어 요청이 계속 밀려 들어갔습니다(제보: CPU #1 52개 / CPU #2 58개가 동시에 copper wire). 이제 **모든 CPU 의 `finalOutput`·`storedItems`·`pendingItems`·`activeItems` 를 사이클당 1회 스냅샷**으로 읽어 대조하고, 스킵 이유를 화면에 표시(`storedItems(CPU1)`). `skipIfAnyCpuBusy` 도 busy/active 둘 다 반영 |
+| v2.5 | 2026-09-26 | **중복 요청·취소 실패의 진짜 원인 수정**: GTNH OpenComputers 소스 확인 결과 **`getCpus()` 는 CPU 값 배열이 아니라 "행 테이블" 배열**이고 실제 값은 **`.cpu` 필드**에 있습니다(`{name, storage, coprocessors, busy, cpu}` — 설치된 jar 바이트코드로 키 확인). 이전 버전은 행을 값으로 착각해 `row.isBusy()` 같은 없는 메서드를 호출 → **모든 CPU 를 판독 실패로 건너뛰어** 중복 요청이 계속 들어가고 취소도 못 했습니다. v2.5는 `.cpu` 를 꺼내 검사하고, 행의 `name`(CPU #1 …)을 스킵/취소 로그에 표시합니다. `diag` 도 행 구조와 CPU별 내용을 그대로 출력 |
+| v2.4 | 2026-09-26 | **CPU 스캔에서 `isBusy()` 조건 제거**: AE2 는 **출력 막힘/재료 대기 상태에서 `isBusy=false`, `isActive=true`** 가 될 수 있어, 그때 그 품목이 CPU 안에 있는데도 감지가 안 되는 문제를 완화. 모든 CPU 의 `finalOutput`·3개 목록을 사이클당 1회 스냅샷으로 읽음. `skipIfAnyCpuBusy` 도 busy/active 둘 다 반영 |
 | v2.3 | 2026-09-26 | **진행 정지 감지 → 자동 취소**: 요청 시점·직전 주기의 보관량을 기록해 매 주기 비교 → `stallCycles`(기본 2주기) 동안 생산량이 늘지 않으면 즉시 중단 + CPU 취소(예: 64개 요청 중 30개만 나오고 멈춘 경우). 화면에 `생산 30/64 · 정지 1/2주기` 표시. **중복 요청 방지 보강**: 상태 객체를 못 읽어도 기록된 CPU가 busy면 진행 중으로 간주, `skipIfAnyCpuBusy` 옵션 추가 |
 | v2.2.1 | 2026-09-26 | **진단 강화**: `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 **이름·수량까지** 출력(OC로 CPU 작업 내용을 어디까지 읽을 수 있는지 바로 확인 가능) |
 | v2.2 | 2026-09-26 | **CPU 포함 스킵**: `cpuSkipScope=any`(기본) — CPU 의 최종산출물뿐 아니라 `storedItems`/`pendingItems`/`activeItems` 에 그 품목이 있으면(사람이 요청한 작업 포함) 요청하지 않음. **타임아웃 기준을 "결과물"로**: `requestTimeout` 초과 시 재고/작업완료를 확인해 결과물이 없으면 중단. **CPU 취소 실패 수정**: 요청 직후 그 작업의 CPU 참조를 기록 → 타임아웃 때 ①기록된 CPU ②품목 포함 CPU 재탐색 ③`cancelFallback=single`(사용 중 CPU 1대) 순으로 `cancel()` 하고 결과를 로그로 표시. 재고 도달 시 요청을 완료 처리 |
