@@ -120,6 +120,17 @@ Craftable(userdata) 메서드: `getStack()` · `request([amount[, prioritizePowe
 > v1.2 는 `finalOutput()` 을 슬롯 품목과 비교해 "이미 제작 중"을 판단하고, 타임아웃 시 그 CPU 를 `cancel()` 합니다.
 > 주의: 취소는 **그 품목을 제작 중인 CPU 의 작업**을 끊습니다. 같은 CPU 작업에 다른 산출물이 함께 있다면 같이 중단될 수 있습니다.
 
+**CPU 안에서 지금 무엇을 만드는지 읽을 수 있나?** → **읽을 수 있습니다.** 위 4가지(`finalOutput`, `activeItems`, `pendingItems`, `storedItems`)가
+그대로 Lua 테이블(스택 목록)로 넘어옵니다. 다만 아래 한계가 있습니다.
+
+| 한계 | 설명 |
+|---|---|
+| 진행률/남은 시간 | 제공되지 않습니다(스택 목록과 busy 여부만) |
+| CPU 이름/인덱스 | Lua 콜백이 없어 **목록 순서(CPU1, CPU2…)** 로만 구분합니다 |
+| `finalOutput()` | CPU 구조에 **크래프팅 모니터 타일**이 있어야 값이 나옵니다("No crafting monitor" 경로). 없으면 `nil`/오류 → 프로그램은 목록 검사로 폴백 |
+| 값 형식 | 아이템은 `{name,label,damage,size}`, 유체는 `{name,label,amount}` (AE2FC 유체 제작 포함) |
+| 확인 방법 | **`ae_maintainer diag`** → CPU별로 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력합니다 |
+
 ### 값(userdata) 메서드 호출 규약 (v1.4에서 수정한 핵심)
 
 OC 커널 `assets/opencomputers/lua/machine.lua` 실측:
@@ -289,6 +300,7 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
+| **v2.2.1 diag 강화** | `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력 (예: `storedItems : 1개: Machine Casing x128 [gregtech:gt.blockmachines]`) |
 | **v2.2 CPU 포함 스킵** | `CPU_ITEM_IN_LIST=1`(최종산출물에는 없고 `storedItems` 에만 있는 상황) → `list` 에서 `AE 제작 중(중복 요청 안 함)`, drive 에서 요청 1건(물)만 발생 |
 | **v2.2 타임아웃=결과물 기준** | `requestTimeout=3` 하네스: `aaa…0001 슬롯1: 3초 동안 결과물이 나오지 않아 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` / 다른 슬롯은 `(CPU 취소됨: 사용 중 CPU 1대(대상 특정 불가))` — mock `CPU cancel()` 호출 확인 |
 | **v2.2 완료 판정** | `STOCK_AFTER_REQUEST=1`(결과물이 네트워크에 들어옴) → 다음 주기에 `재고가 목표치에 도달해 요청을 완료 처리(보관 4,096)` + `충족` 표시 |
@@ -346,6 +358,7 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v2.2.1 | 2026-09-26 | **진단 강화**: `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 **이름·수량까지** 출력(OC로 CPU 작업 내용을 어디까지 읽을 수 있는지 바로 확인 가능) |
 | v2.2 | 2026-09-26 | **CPU 포함 스킵**: `cpuSkipScope=any`(기본) — CPU 의 최종산출물뿐 아니라 `storedItems`/`pendingItems`/`activeItems` 에 그 품목이 있으면(사람이 요청한 작업 포함) 요청하지 않음. **타임아웃 기준을 "결과물"로**: `requestTimeout` 초과 시 재고/작업완료를 확인해 결과물이 없으면 중단. **CPU 취소 실패 수정**: 요청 직후 그 작업의 CPU 참조를 기록 → 타임아웃 때 ①기록된 CPU ②품목 포함 CPU 재탐색 ③`cancelFallback=single`(사용 중 CPU 1대) 순으로 `cancel()` 하고 결과를 로그로 표시. 재고 도달 시 요청을 완료 처리 |
 | v2.1 | 2026-09-26 | **상세 페이지 전환**: 기본 화면을 "유지기별 상세(슬롯 5줄)"로 바꾸고 **`detailPerPage`(기본 2대)씩 `pageSeconds` 마다 자동 전환**. `summary`/`detail` 명령으로 보기 전환, `show <번호>` 는 고정 상세. 설정 키 `view`,`detailPerPage` 추가 |
 | v2.0 | 2026-09-26 | **다중 유지기 지원**: 어댑터에 붙은 모든 `level_maintainer` 자동 인식(주소 오름차순). 요약 화면(페이지 + 자동 전환 `pageSize`/`pageSeconds`, 별칭 `name.<주소>`), `show <번호>` 상세, `list` 전체 출력. `set` 이 `<번호> <슬롯> <유지> <배치>` 로 변경. **성능**: 보관량을 사이클당 1회 일괄 조회(`bulkQuery`, 실패 시 슬롯별 폴백), CPU 목록도 사이클당 1회. 요청 추적/타임아웃/원상복구를 유지기별로 처리 |

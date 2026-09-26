@@ -88,7 +88,7 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `ae_maintainer list` | 전체 유지기/슬롯 상세 **1회 출력** |
 | `ae_maintainer once` | 1회만 계산/표시 |
 | `ae_maintainer set 2 1 4096 512` | **2번 유지기** 1번 슬롯: 유지 4096, 1회 제작 512 |
-| `ae_maintainer diag` | 진단 정보(모든 유지기 + 값 타입) 출력 |
+| `ae_maintainer diag` | 진단 정보 — 모든 유지기 주소 + 값 타입 + **CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 내용** |
 | `ae_maintainer help` | 도움말 |
 
 ### 화면 예시 (기본: 상세 2대씩)

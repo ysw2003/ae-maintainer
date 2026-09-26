@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.2"
+local VERSION = "2.2.1"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -982,12 +982,43 @@ local function main(...)
       print(string.format("CPU 목록    : ok=%s type=%s count=%s", tostring(ok5), type(cpus),
         (type(cpus) == "table") and tostring(#cpus) or "?"))
       if type(cpus) == "table" and cpus[1] then
-        local cpu = cpus[1]
-        print(string.format("CPU[1]      : type=%s / .isBusy=%s / .finalOutput=%s / .cancel=%s",
-          type(cpu), type(cpu.isBusy), type(cpu.finalOutput), type(cpu.cancel)))
-        local ok6, busy = callValue(cpu, "isBusy")
-        print(string.format("isBusy()    : %s%s", tostring(ok6),
-          ok6 and (" → " .. tostring(busy)) or (" 실패: " .. tostring(busy))))
+        local cpu0 = cpus[1]
+        print(string.format("CPU 값 형태 : type=%s / .isBusy=%s / .finalOutput=%s / .cancel=%s",
+          type(cpu0), type(cpu0.isBusy), type(cpu0.finalOutput), type(cpu0.cancel)))
+      end
+      -- CPU 별로 지금 만들고 있는 것 / 안에 들어 있는 것을 그대로 보여준다
+      if type(cpus) == "table" then
+        local function stackText(st)
+          if type(st) ~= "table" then return "?" end
+          local cnt = st.size or st.amount or 0
+          return string.format("%s x%s [%s]", tostring(st.label or st.name), comma(cnt), tostring(st.name))
+        end
+        local function listText(cpu, meth, maxN)
+          local ok, list = callValue(cpu, meth)
+          if not ok then return "읽기 실패: " .. tostring(list) end
+          if type(list) ~= "table" then return "없음" end
+          if #list == 0 then return "0개" end
+          local out = {}
+          for k = 1, math.min(#list, maxN) do out[#out + 1] = stackText(list[k]) end
+          return string.format("%d개: %s%s", #list, table.concat(out, " | "),
+            (#list > maxN) and " ..." or "")
+        end
+        local function finalText(cpu)
+          local ok, st = callValue(cpu, "finalOutput")
+          if not ok then return "읽기 실패: " .. tostring(st) end
+          if type(st) ~= "table" then return "없음(nil)" end
+          if st.name then return stackText(st) end          -- 단일 스택으로 오는 경우
+          if #st == 0 then return "없음(빈 테이블)" end
+          return listText(cpu, "finalOutput", 1)            -- 배열로 오는 경우 대비
+        end
+        for ci, cpu in ipairs(cpus) do
+          print(string.format("  CPU%d busy=%s active=%s", ci,
+            tostring(callBool(cpu, "isBusy")), tostring(callBool(cpu, "isActive"))))
+          print("       finalOutput : " .. finalText(cpu))
+          print("       activeItems : " .. listText(cpu, "activeItems", 3))
+          print("       pendingItems: " .. listText(cpu, "pendingItems", 3))
+          print("       storedItems : " .. listText(cpu, "storedItems", 3))
+        end
       end
     end
     return
