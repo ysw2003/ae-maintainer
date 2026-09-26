@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.2.1"
+local VERSION = "2.3"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -52,9 +52,12 @@ local CONFIG = {
 
   -- 응답 없는 요청 자동 중단
   requestTimeout  = 60,   -- 요청 후 이 초 안에 결과물이 안 나오면 중단(+CPU 취소 시도). 0=비활성
-  cancelOnTimeout = true, -- 타임아웃 시 해당 AE CPU 작업 취소 시도
+  stallCycles     = 2,    -- 요청 후 N번의 주기 동안 생산량이 늘지 않으면 정지로 보고 취소 (0=끔)
+  stallMinProgress = 1,   -- 진행으로 인정할 최소 증가량(개수/mB)
+  cancelOnTimeout = true, -- 타임아웃/정지 시 해당 AE CPU 작업 취소 시도
   cancelFallback  = "single", -- 취소 대상을 못 찾았을 때: "single"=사용 중 CPU가 1대뿐이면 취소 / "none"=취소 안 함
   timeoutCooldown = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
+  skipIfAnyCpuBusy = false, -- true=사용 중 CPU 가 있으면 모든 요청 보류(중복 방지 극대화)
 
   -- 화면
   countdown = true,       -- 다음 주기까지 남은 시간을 1초마다 갱신
@@ -199,6 +202,7 @@ local CFG_KEYS = {
   "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
   "skipIfCrafting", "cpuSkipScope", "skipIfMaintainer",
   "requestTimeout", "cancelOnTimeout", "cancelFallback", "timeoutCooldown",
+  "stallCycles", "stallMinProgress", "skipIfAnyCpuBusy",
   "countdown", "view", "detailPerPage", "pageSize", "pageSeconds",
   "maxMaintainers", "bulkQuery",
 }
@@ -437,6 +441,15 @@ local function findCraftingCpu(cpus, slot, force)
   return nil
 end
 
+-- 사용 중인 CPU 가 하나라도 있는가 (skipIfAnyCpuBusy 용)
+local function anyCpuBusy(cpus)
+  if type(cpus) ~= "table" then return false end
+  for _, cpu in ipairs(cpus) do
+    if callBool(cpu, "isBusy") then return true end
+  end
+  return false
+end
+
 -- 레시피(Craftable 값) 찾기
 local function findCraftable(mc, slot)
   local filter
@@ -480,6 +493,8 @@ local function jobBusy(key)
   local st = p.status
   local computing = st and callBool(st, "isComputing")
   if computing == nil then
+    -- 상태 객체를 못 읽어도, 기록해 둔 CPU 가 아직 작업 중이면 진행 중으로 본다
+    if p.cpu and callBool(p.cpu, "isBusy") then return true end
     state.pending[key] = nil
     return false
   end
@@ -503,10 +518,39 @@ local function pendingInfo(key, compact)
   if compact then return "*" end
   local t = nowSeconds()
   local elapsed = (t and p.startedAt) and math.floor(t - p.startedAt) or 0
-  if CONFIG.requestTimeout and CONFIG.requestTimeout > 0 then
-    return string.format("  [요청 %s 진행 %d/%d초]", comma(p.amount), elapsed, CONFIG.requestTimeout)
+  local parts = { "요청 " .. comma(p.amount) }
+  if p.produced and p.produced > 0 then
+    parts[#parts + 1] = string.format("생산 %s", comma(p.produced))
   end
-  return string.format("  [요청 %s 진행 %d초]", comma(p.amount), elapsed)
+  if (CONFIG.stallCycles or 0) > 0 then
+    parts[#parts + 1] = string.format("정지 %d/%d주기", p.stallCount or 0, CONFIG.stallCycles)
+  end
+  if CONFIG.requestTimeout and CONFIG.requestTimeout > 0 then
+    parts[#parts + 1] = string.format("%d/%d초", elapsed, CONFIG.requestTimeout)
+  else
+    parts[#parts + 1] = string.format("%d초", elapsed)
+  end
+  return "  [" .. table.concat(parts, " · ") .. "]"
+end
+
+-- 요청의 CPU 작업을 찾아 취소. 반환: cpu, why, canceled, res
+--   ① 요청 시 기록해 둔 CPU ② 그 품목이 포함된 CPU 재탐색 ③ (옵션) 사용 중 CPU 1대
+local function cancelCraft(ctx, p)
+  if not (CONFIG.cancelOnTimeout and ctx.mc) then return nil, nil, false, nil end
+  local cpu, why = nil, nil
+  if p.cpu then cpu, why = p.cpu, "요청 시 기록된 CPU" end
+  local okc, cpus = pcall(ctx.mc.getCpus)
+  if not cpu and okc then cpu, why = findCraftingCpu(cpus, p.slot, true) end
+  if not cpu and okc and CONFIG.cancelFallback == "single" and type(cpus) == "table" then
+    local busy = {}
+    for _, c2 in ipairs(cpus) do
+      if callBool(c2, "isBusy") then busy[#busy + 1] = c2 end
+    end
+    if #busy == 1 then cpu, why = busy[1], "사용 중 CPU 1대(대상 특정 불가)" end
+  end
+  if not cpu then return nil, nil, false, nil end
+  local ok2, r = callValue(cpu, "cancel")
+  return cpu, why, (ok2 and (r ~= false)), r
 end
 
 -- 타임아웃 감시 (매 초). 응답 없는 요청은 중단하고 가능하면 CPU 작업도 취소.
@@ -529,27 +573,7 @@ local function checkPending(ctx)
         log("%s 슬롯%d: 요청 완료(%.0f초%s)", shortAddr(p.maint), p.slot.index, elapsed,
           satisfied and ", 결과물 확인" or "")
       else
-        -- 취소 대상 CPU 결정: ① 요청 시 기록한 CPU ② 품목 포함 CPU 재탐색 ③ (옵션) 사용 중 CPU 1대
-        local cpu, why = nil, nil
-        local okc, cpus = false, nil
-        if CONFIG.cancelOnTimeout and ctx.mc then
-          if p.cpu then cpu, why = p.cpu, "요청 시 기록된 CPU" end
-          okc, cpus = pcall(ctx.mc.getCpus)
-          if not cpu and okc then cpu, why = findCraftingCpu(cpus, p.slot, true) end
-          if not cpu and okc and CONFIG.cancelFallback == "single" and type(cpus) == "table" then
-            local busy = {}
-            for _, c2 in ipairs(cpus) do
-              if callBool(c2, "isBusy") then busy[#busy + 1] = c2 end
-            end
-            if #busy == 1 then cpu, why = busy[1], "사용 중 CPU 1대(대상 특정 불가)" end
-          end
-        end
-        local canceled, res = false, nil
-        if cpu then
-          local ok2, r = callValue(cpu, "cancel")
-          canceled = ok2 and (r ~= false)
-          res = r
-        end
+        local cpu, why, canceled, res = cancelCraft(ctx, p)
         if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
           state.cooldownUntil[key] = t + CONFIG.timeoutCooldown
         end
@@ -641,6 +665,26 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
         else
           local deficit = s.quantity - stored
           local cooling = state.cooldownUntil[key] and t and (state.cooldownUntil[key] > t)
+
+          -- 진행/정지 판정: 직전 주기 대비 생산량이 늘었는지 확인
+          local p = state.pending[key]
+          local stalled = false
+          if p and deficit > 0 then
+            if p.stockAtRequest == nil then p.stockAtRequest = stored end
+            p.produced = stored - p.stockAtRequest
+            if p.lastStock ~= nil then
+              if (stored - p.lastStock) >= (CONFIG.stallMinProgress or 1) then
+                p.stallCount = 0                                  -- 진행 중
+              else
+                p.stallCount = (p.stallCount or 0) + 1            -- 제자리
+              end
+            end
+            p.lastStock = stored
+            if (CONFIG.stallCycles or 0) > 0 and (p.stallCount or 0) >= CONFIG.stallCycles then
+              stalled = true
+            end
+          end
+
           if deficit <= 0 then
             if state.pending[key] then
               state.pending[key] = nil
@@ -649,10 +693,25 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
                 shortAddr(m.addr), s.index, comma(stored))
             end
             st.lines[i] = head .. string.format("  보관 %-11s 충족", comma(stored))
+          elseif stalled then
+            st.short = st.short + 1
+            local cpu, why, canceled = cancelCraft(ctx, p)
+            state.pending[key] = nil
+            if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
+              state.cooldownUntil[key] = t + CONFIG.timeoutCooldown
+            end
+            log("%s 슬롯%d: %d주기 동안 진행이 없어(보관 %s · 생산 %s/%s) 요청을 중단했습니다%s",
+              shortAddr(m.addr), s.index, CONFIG.stallCycles, comma(stored),
+              comma(p.produced or 0), comma(p.amount),
+              cpu and (canceled and (" (CPU 취소됨: " .. tostring(why) .. ")")
+                                or (" (CPU 취소 실패: " .. tostring(why) .. ")"))
+                  or " (취소할 CPU를 찾지 못함)")
+            st.lines[i] = head .. string.format("  보관 %-11s 정지 감지 → 요청 중단", comma(stored))
           elseif jobBusy(key) then
             st.short = st.short + 1
             st.pendingN = st.pendingN + 1
             st.lines[i] = head .. string.format("  보관 %-11s 이전 요청 진행 중", comma(stored))
+              .. pendingInfo(key)
           elseif cooling then
             st.short = st.short + 1
             st.waiting = st.waiting + 1
@@ -668,6 +727,10 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
               st.short = st.short + 1
               st.crafting = st.crafting + 1
               st.lines[i] = head .. "  AE 제작 중(중복 요청 안 함)"
+            elseif CONFIG.skipIfAnyCpuBusy and anyCpuBusy(cpus) then
+              st.short = st.short + 1
+              st.crafting = st.crafting + 1
+              st.lines[i] = head .. "  다른 CPU 작업 중(보류)"
             elseif (not ctx.drive) or CONFIG.dryRun then
               st.short = st.short + 1
               st.lines[i] = head .. string.format("  보관 %-11s 부족 %s (요청 안 함)",
@@ -687,7 +750,8 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
                   local okc, fresh = pcall(ctx.mc.getCpus)
                   if okc then cpuRef = findCraftingCpu(fresh, s, true) end
                   state.pending[key] = { status = stt, amount = amount, slot = s,
-                                         maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef }
+                                         maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef,
+                                         stockAtRequest = stored, lastStock = stored }
                   state.cooldownUntil[key] = nil
                   st.requested = st.requested + 1
                   st.pendingN = st.pendingN + 1

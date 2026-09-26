@@ -10,6 +10,7 @@ OpenComputers 어댑터로 읽어서, **내가 정한 주기마다** ME 네트�
 | 하는 일 | 현재 보관량 조회 → 부족분 계산 → 지정 주기(초)마다 요청 (유지기 많을 땐 보관량을 사이클당 1회 일괄 조회) |
 | 중복 요청 방지 | **AE CPU 작업에 같은 품목이 들어 있으면**(최종산출물·보관·대기·제작중, **사람이 요청한 것 포함**) 새 요청을 넣지 않음 + 유지기 자체 작업 중이어도 건너뜀 |
 | 응답 없는 요청 | 요청 후 `requestTimeout`(기본 **60초**) 동안 **결과물이 나오지 않으면**(재고 미도달·작업 미완료) 요청 중단 + **그 작업의 CPU 취소**(요청 시 CPU 기록 → 재탐색 → 사용 중 CPU 1대면 그 CPU) |
+| **진행 정지 감지** | 요청 후 **매 주기마다 생산량을 이전 주기와 비교** → `stallCycles`(기본 **2주기**) 동안 늘지 않으면 `예: 64 요청 → 30만 나오고 멈춤` 으로 보고 **즉시 중단 + CPU 취소** |
 | 화면 표시 | 다음 요청까지 남은 시간 + 진행 중 요청 경과/타임아웃을 **1초마다** 갱신 |
 | 컴포넌트 | `level_maintainer` (어댑터 + ME Level Maintainer, 여러 대), `me_controller` 또는 `me_interface` |
 | 검증 환경 | GTNH 2.9.0-beta-3 · `appliedenergistics2-rv3-beta-1050-GTNH` · `ae2fc-1.5.106-gtnh` · `OpenComputers-1.12.61-GTNH` |
@@ -127,8 +128,11 @@ ae_maintainer drive 30    -- 30초 주기로 직접 요청
 | `cpuSkipScope` | `any` | `any`=최종산출물·보관·대기·제작중 어디에든 있으면 스킵(사람 요청 포함) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
 | `requestTimeout` | `60` | 요청 후 이 초 안에 **결과물이 안 나오면** 중단(+CPU 취소 시도). `0`=끔 |
-| `cancelOnTimeout` | `true` | 타임아웃 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
+| `stallCycles` | `2` | **요청 후 N번의 주기 동안 생산량이 늘지 않으면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔 |
+| `stallMinProgress` | `1` | 진행으로 인정할 최소 증가량(개수/mB) |
+| `cancelOnTimeout` | `true` | 타임아웃/정지 시 해당 품목을 제작 중인 CPU 의 작업을 취소 |
 | `cancelFallback` | `single` | 취소 대상을 못 찾았을 때: `single`=사용 중 CPU 가 1대뿐이면 취소 / `none`=취소 안 함 |
+| `skipIfAnyCpuBusy` | `false` | `true`=사용 중인 CPU 가 하나라도 있으면 모든 요청 보류(중복 방지 극대화) |
 | `timeoutCooldown` | `0` | 중단 후 그 슬롯을 다시 요청하지 않을 시간(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면: `detail`=유지기별 상세(슬롯 5줄) / `summary`=한 줄 요약 |
@@ -178,6 +182,8 @@ TARGET_DIR=/tmp/ocinstall lua5.3 tests/oc_mock_setup.lua       # 설치 스크�
 | `요청 실패: request 호출 실패(table)` (v1.3 이하) | v1.4에서 수정. OC는 값(userdata)의 메서드를 **호출 가능한 테이블**로 노출합니다(함수가 아님). v1.4는 타입을 따지지 않고 호출합니다 |
 | **타임아웃인데 CPU 취소가 안 됨** (v2.1 이하) | v2.2에서 수정. 이제 ① 요청 직후 CPU를 기억 ② 품목 포함 CPU 재탐색 ③ `cancelFallback=single`(사용 중 CPU 1대) 순으로 취소하고, 결과를 로그에 표시합니다 |
 | 사람이 요청한 작업과 겹쳐서 유지기가 안 움직임 | **의도된 동작**(`cpuSkipScope=any`). 최종 결과물만 기준으로 삼으려면 `cpuSkipScope=final` 로 설정 |
+| **CPU가 그 품목을 만들고 있는데도 요청이 또 들어감** | CPU 목록에 그 품목이 안 잡히는 경우(크래프팅 모니터 없는 CPU 등)입니다. ① `takeover=true` 확인(유지기 자체 요청 차단) ② `skipIfAnyCpuBusy=true` 로 사용 중 CPU가 있으면 모든 요청 보류 ③ 정지 감지(`stallCycles`)가 걸러내고 취소합니다 |
+| 64개 요청했는데 30개만 나오고 멈춤 | `stallCycles`(기본 2주기) 동안 생산량이 그대로면 **자동으로 CPU 취소**하고 다음 주기에 다시 요청합니다. 참을성을 늘리려면 `stallCycles=3~5` |
 | 설치 중 `attempt to call a table value (field 'close')` (setup v1.1 이하) | v1.2(setup)에서 수정. 이 환경에서는 `handle.close()` 를 호출할 수 없어(연쇄 `__call` 미지원) 호출하지 않습니다(EOF에서 자동 종료) |
 | 그래도 원인을 모르겠음 | **`ae_maintainer diag`** 실행 후 출력을 보내주세요 (값 타입·메서드 호출 가능 여부가 나옵니다) |
 

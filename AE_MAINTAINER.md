@@ -247,8 +247,11 @@ dryRun=false
 | `cpuSkipScope` | `any` | `any`=CPU 의 최종산출물/보관/대기/제작중 어디에든 있으면 스킵(**사람이 요청한 것 포함**) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
 | `requestTimeout` | `60` | 요청 후 이 초 안에 **결과물이 안 나오면** 중단(+CPU 취소 시도). `0`=끔 |
-| `cancelOnTimeout` | `true` | 타임아웃 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
+| `stallCycles` | `2` | **요청 후 N번의 주기 동안 생산량이 늘지 않으면** 정지로 보고 즉시 중단+CPU 취소. `0`=끔 |
+| `stallMinProgress` | `1` | 진행으로 인정할 최소 증가량 |
+| `cancelOnTimeout` | `true` | 타임아웃/정지 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
 | `cancelFallback` | `single` | 취소 대상을 못 찾았을 때 `single`=사용 중 CPU 1대면 취소 / `none`=취소 안 함 |
+| `skipIfAnyCpuBusy` | `false` | `true`=사용 중 CPU 가 하나라도 있으면 모든 요청 보류 |
 | `timeoutCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면 종류: `detail`(유지기별 슬롯 5줄) / `summary`(한 줄 요약) |
@@ -271,7 +274,20 @@ dryRun=false
    2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
    3. 유지기 자체가 그 슬롯 작업 중(`isDone=false`) → 건너뜀
    4. **AE CPU 작업에 그 품목이 포함**(`cpuSkipScope=any`: `finalOutput` + `storedItems`/`pendingItems`/`activeItems`) → 건너뜀 (사람이 요청한 작업이어도 동일)
-6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 기록)
+6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 + **요청 시점 보관량** 기록)
+
+### 진행 정지 감지 → 자동 취소 (v2.3)
+
+요청을 넣은 뒤 매 주기마다 그 슬롯의 **보관량을 이전 주기와 비교**합니다(요청 시점 보관량도 함께 기록).
+
+| 상태 | 판정 | 동작 |
+|---|---|---|
+| 보관량이 `stallMinProgress` 이상 증가 | **진행 중** | 정지 카운트 0으로 리셋, 재요청 없음 |
+| 증가 없음 | **제자리** | 정지 카운트 +1 → `stallCycles` 에 도달하면 **즉시 중단 + CPU 취소** |
+| 보관량 ≥ 유지수량 | **완료** | 요청 추적 해제(완료 로그) |
+
+예: 64개 요청 → 30개만 납품되고 멈춤 → `생산 30/64`, `정지 1/2주기` 표시 → 2주기 연속 그대로면
+`2주기 동안 진행이 없어(보관 30 · 생산 30/64) 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)`
 
 ### 매 초 동작 (대기 중) — v2.2
 
@@ -300,6 +316,7 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
+| **v2.3 정지 감지** | `PARTIAL_AFTER_REQUEST=1`(부분 납품 30개 후 정지) + `stallCycles=2`: `이전 요청 진행 중 [요청 512 · 정지 1/2주기 · 4/60초]` 로 재요청 없음(요청 총 2건 유지) → 2주기째 `2주기 동안 진행이 없어(보관 1,084 · 생산 60/512) 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` + mock `cancel()` 호출 확인 |
 | **v2.2.1 diag 강화** | `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 이름·수량까지 출력 (예: `storedItems : 1개: Machine Casing x128 [gregtech:gt.blockmachines]`) |
 | **v2.2 CPU 포함 스킵** | `CPU_ITEM_IN_LIST=1`(최종산출물에는 없고 `storedItems` 에만 있는 상황) → `list` 에서 `AE 제작 중(중복 요청 안 함)`, drive 에서 요청 1건(물)만 발생 |
 | **v2.2 타임아웃=결과물 기준** | `requestTimeout=3` 하네스: `aaa…0001 슬롯1: 3초 동안 결과물이 나오지 않아 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` / 다른 슬롯은 `(CPU 취소됨: 사용 중 CPU 1대(대상 특정 불가))` — mock `CPU cancel()` 호출 확인 |
@@ -358,6 +375,7 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v2.3 | 2026-09-26 | **진행 정지 감지 → 자동 취소**: 요청 시점·직전 주기의 보관량을 기록해 매 주기 비교 → `stallCycles`(기본 2주기) 동안 생산량이 늘지 않으면 즉시 중단 + CPU 취소(예: 64개 요청 중 30개만 나오고 멈춘 경우). 화면에 `생산 30/64 · 정지 1/2주기` 표시. **중복 요청 방지 보강**: 상태 객체를 못 읽어도 기록된 CPU가 busy면 진행 중으로 간주, `skipIfAnyCpuBusy` 옵션 추가 |
 | v2.2.1 | 2026-09-26 | **진단 강화**: `ae_maintainer diag` 가 CPU별 `finalOutput`/`activeItems`/`pendingItems`/`storedItems` 를 **이름·수량까지** 출력(OC로 CPU 작업 내용을 어디까지 읽을 수 있는지 바로 확인 가능) |
 | v2.2 | 2026-09-26 | **CPU 포함 스킵**: `cpuSkipScope=any`(기본) — CPU 의 최종산출물뿐 아니라 `storedItems`/`pendingItems`/`activeItems` 에 그 품목이 있으면(사람이 요청한 작업 포함) 요청하지 않음. **타임아웃 기준을 "결과물"로**: `requestTimeout` 초과 시 재고/작업완료를 확인해 결과물이 없으면 중단. **CPU 취소 실패 수정**: 요청 직후 그 작업의 CPU 참조를 기록 → 타임아웃 때 ①기록된 CPU ②품목 포함 CPU 재탐색 ③`cancelFallback=single`(사용 중 CPU 1대) 순으로 `cancel()` 하고 결과를 로그로 표시. 재고 도달 시 요청을 완료 처리 |
 | v2.1 | 2026-09-26 | **상세 페이지 전환**: 기본 화면을 "유지기별 상세(슬롯 5줄)"로 바꾸고 **`detailPerPage`(기본 2대)씩 `pageSeconds` 마다 자동 전환**. `summary`/`detail` 명령으로 보기 전환, `show <번호>` 는 고정 상세. 설정 키 `view`,`detailPerPage` 추가 |

@@ -67,6 +67,11 @@ local craftable = wrapValue({
     if os.getenv("STOCK_AFTER_REQUEST") == "1" then
       NET["gregtech:gt.blockmachines"] = 4096   -- 결과물이 들어온 상황(완료 판정 검증)
     end
+    if os.getenv("PARTIAL_AFTER_REQUEST") == "1" then
+      NET["gregtech:gt.blockmachines"] = (NET["gregtech:gt.blockmachines"] or 0) + 30
+      io.write(string.format("   >> (mock) 부분 납품만 됨: 보관 %d (이후 정지)\n",
+        NET["gregtech:gt.blockmachines"]))
+    end
     return status
   end,
 })
