@@ -42,6 +42,12 @@ end
 local cpuBusy = false
 local cpuCanceled = false
 
+-- ---- 네트워크 보관량(이름 -> 수량) — craftable.request 가 결과물을 넣을 수 있음 ----
+local NET = {
+  ["gregtech:gt.blockmachines"] = 1024,
+  ["minecraft:iron_ingot"] = 300,
+}
+
 -- ---- 상태 객체(CraftingStatus) 흉내 ----
 local status = wrapValue({
   isComputing = function(self) return true end,
@@ -58,6 +64,9 @@ local craftable = wrapValue({
   request = function(self, amount)
     io.write(string.format("   >> (mock) request(%s) 호출됨\n", tostring(amount)))
     cpuBusy = true          -- 요청하면 CPU 가 그 작업으로 바빠진다
+    if os.getenv("STOCK_AFTER_REQUEST") == "1" then
+      NET["gregtech:gt.blockmachines"] = 4096   -- 결과물이 들어온 상황(완료 판정 검증)
+    end
     return status
   end,
 })
@@ -67,10 +76,6 @@ local mcObj = {}
 local ITEM_LABELS = {
   ["gregtech:gt.blockmachines"] = "Machine Casing",
   ["minecraft:iron_ingot"] = "Iron Ingot",
-}
-local NET = {                      -- 네트워크 보관량(이름 -> 수량)
-  ["gregtech:gt.blockmachines"] = 1024,
-  ["minecraft:iron_ingot"] = 300,
 }
 function mcObj.getItemsInNetwork(filter)
   filter = filter or {}
@@ -95,18 +100,32 @@ function mcObj.getCraftables(filter)
 end
 
 -- ---- Crafting CPU 흉내 (getCpus) ---- (값 = 프록시 테이블)
---   CPU_BUSY_MATCH=1 : 처음부터 slot1 품목을 제작 중인 CPU 가 있는 상황
---   기본            : 요청(request) 후에 그 CPU 가 busy 가 되는 상황(타임아웃/취소 검증용)
+--   CPU_BUSY_MATCH=1  : 처음부터 CPU 가 사용 중
+--   CPU_ITEM_IN_LIST=1: 최종산출물로는 안 보이고 storedItems 에만 우리 품목이 있는 상황
+--   CPU_OTHER_ITEM=1  : CPU 가 다른 품목을 제작 중(우리 품목 없음 → 단일 CPU 폴백 검증)
 cpuBusy = (os.getenv("CPU_BUSY_MATCH") == "1")
+local CPU_ITEM_IN_LIST = os.getenv("CPU_ITEM_IN_LIST") == "1"
+local CPU_OTHER_ITEM = os.getenv("CPU_OTHER_ITEM") == "1"
 local cpuObj = wrapValue({
   isBusy  = function(self) return cpuBusy end,
   isActive = function(self) return cpuBusy end,
   finalOutput = function(self)
     if not cpuBusy then return nil end
+    if CPU_ITEM_IN_LIST or CPU_OTHER_ITEM then
+      if CPU_OTHER_ITEM then
+        return { name = "minecraft:diamond", label = "Diamond", damage = 0, size = 64 }
+      end
+      return nil
+    end
     return { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 512 }
   end,
   activeItems  = function(self) return {} end,
-  storedItems  = function(self) return {} end,
+  storedItems  = function(self)
+    if cpuBusy and CPU_ITEM_IN_LIST then
+      return { { name = "gregtech:gt.blockmachines", label = "Machine Casing", damage = 0, size = 128 } }
+    end
+    return {}
+  end,
   pendingItems = function(self) return {} end,
   cancel = function(self)
     cpuCanceled = true

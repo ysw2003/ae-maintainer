@@ -32,7 +32,7 @@
 --   name.<어댑터주소>=창고A   ← 유지기에 별칭을 붙일 수 있음
 --------------------------------------------------------------------------------
 
-local VERSION = "2.1"
+local VERSION = "2.2"
 
 -- ============================ 사용자 설정 ====================================
 local CONFIG = {
@@ -45,13 +45,15 @@ local CONFIG = {
   autoRestore   = true,  -- 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구
 
   -- 중복 요청 방지
-  skipIfCrafting   = true,  -- AE CPU 가 같은 품목을 제작 중이면 요청하지 않음(finalOutput 비교)
-  scanActiveItems  = false, -- 위 판단에 activeItems/storedItems/pendingItems 까지 포함(오탐 가능)
+  skipIfCrafting   = true,  -- AE CPU 작업에 같은 품목이 들어 있으면 요청하지 않음
+  cpuSkipScope     = "any", -- "any"=CPU 의 최종산출물/보관/대기/제작중 어디에든 있으면 스킵(사람 요청 포함)
+                            -- "final"=그 CPU 의 최종 결과물일 때만 스킵
   skipIfMaintainer = true,  -- 유지기 자체가 그 슬롯 작업 중(isDone=false)이면 요청하지 않음
 
   -- 응답 없는 요청 자동 중단
-  requestTimeout  = 60,   -- 요청 후 이 초 안에 완료되지 않으면 중단(+AE CPU 취소 시도). 0=비활성
+  requestTimeout  = 60,   -- 요청 후 이 초 안에 결과물이 안 나오면 중단(+CPU 취소 시도). 0=비활성
   cancelOnTimeout = true, -- 타임아웃 시 해당 AE CPU 작업 취소 시도
+  cancelFallback  = "single", -- 취소 대상을 못 찾았을 때: "single"=사용 중 CPU가 1대뿐이면 취소 / "none"=취소 안 함
   timeoutCooldown = 0,    -- 중단 후 이 초 동안 그 슬롯 재요청 금지 (0=즉시 재시도 가능)
 
   -- 화면
@@ -195,8 +197,8 @@ end
 
 local CFG_KEYS = {
   "mode", "interval", "takeover", "batchMode", "dryRun", "labelFallback", "autoRestore",
-  "skipIfCrafting", "scanActiveItems", "skipIfMaintainer",
-  "requestTimeout", "cancelOnTimeout", "timeoutCooldown",
+  "skipIfCrafting", "cpuSkipScope", "skipIfMaintainer",
+  "requestTimeout", "cancelOnTimeout", "cancelFallback", "timeoutCooldown",
   "countdown", "view", "detailPerPage", "pageSize", "pageSeconds",
   "maxMaintainers", "bulkQuery",
 }
@@ -403,23 +405,32 @@ local function stackMatches(slot, st)
   return false
 end
 
--- cpus: 사이클당 1회 조회한 CPU 목록(값 프록시 배열)
+-- CPU 안에 이 품목이 들어 있는가 (보관/대기/제작중 목록)
+local function cpuListsHave(cpu, slot)
+  for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
+    local ok, list = callValue(cpu, meth)
+    if ok and type(list) == "table" then
+      for _, st in ipairs(list) do
+        if stackMatches(slot, st) then return meth end
+      end
+    end
+  end
+  return nil
+end
+
+-- cpus: 조회한 CPU 목록(값 프록시 배열). 반환: cpu, 이유
+--   cpuSkipScope="any"  → 최종산출물 + 보관/대기/제작중 목록 어디에든 있으면 그 CPU
+--   cpuSkipScope="final"→ 최종산출물일 때만
 local function findCraftingCpu(cpus, slot, force)
   if not (force or CONFIG.skipIfCrafting) then return nil end
   if type(cpus) ~= "table" then return nil end
   for _, cpu in ipairs(cpus) do
     if callBool(cpu, "isBusy") then
       local ok, final = callValue(cpu, "finalOutput")
-      if ok and stackMatches(slot, final) then return cpu end
-      if CONFIG.scanActiveItems then
-        for _, meth in ipairs({ "activeItems", "storedItems", "pendingItems" }) do
-          local okL, list = callValue(cpu, meth)
-          if okL and type(list) == "table" then
-            for _, st in ipairs(list) do
-              if stackMatches(slot, st) then return cpu end
-            end
-          end
-        end
+      if ok and stackMatches(slot, final) then return cpu, "finalOutput" end
+      if CONFIG.cpuSkipScope ~= "final" then
+        local which = cpuListsHave(cpu, slot)
+        if which then return cpu, which end
       end
     end
   end
@@ -507,28 +518,47 @@ local function checkPending(ctx)
     local elapsed = p.startedAt and (t - p.startedAt) or 0
     if timeout > 0 and elapsed >= timeout then
       local wasDone = callBool(p.status, "isDone")
+      -- "결과물이 나왔는가" 확인: 재고가 목표(유지수량)에 도달했으면 완료로 본다
+      local satisfied = false
+      if not wasDone and ctx.mc and p.slot then
+        local stored = storedAmount(ctx.mc, p.slot, nil, nil)
+        if stored and p.slot.quantity and stored >= p.slot.quantity then satisfied = true end
+      end
       state.pending[key] = nil
-      if wasDone then
-        log("%s 슬롯%d: 요청 완료(%.0f초)", shortAddr(p.maint), p.slot.index, elapsed)
+      if wasDone or satisfied then
+        log("%s 슬롯%d: 요청 완료(%.0f초%s)", shortAddr(p.maint), p.slot.index, elapsed,
+          satisfied and ", 결과물 확인" or "")
       else
-        local canceled = false
+        -- 취소 대상 CPU 결정: ① 요청 시 기록한 CPU ② 품목 포함 CPU 재탐색 ③ (옵션) 사용 중 CPU 1대
+        local cpu, why = nil, nil
+        local okc, cpus = false, nil
         if CONFIG.cancelOnTimeout and ctx.mc then
-          local okc, cpus = pcall(ctx.mc.getCpus)
-          if okc then
-            local cpu = findCraftingCpu(cpus, p.slot, true)
-            if cpu then
-              local ok = callValue(cpu, "cancel")
-              canceled = ok and true or false
+          if p.cpu then cpu, why = p.cpu, "요청 시 기록된 CPU" end
+          okc, cpus = pcall(ctx.mc.getCpus)
+          if not cpu and okc then cpu, why = findCraftingCpu(cpus, p.slot, true) end
+          if not cpu and okc and CONFIG.cancelFallback == "single" and type(cpus) == "table" then
+            local busy = {}
+            for _, c2 in ipairs(cpus) do
+              if callBool(c2, "isBusy") then busy[#busy + 1] = c2 end
             end
+            if #busy == 1 then cpu, why = busy[1], "사용 중 CPU 1대(대상 특정 불가)" end
           end
+        end
+        local canceled, res = false, nil
+        if cpu then
+          local ok2, r = callValue(cpu, "cancel")
+          canceled = ok2 and (r ~= false)
+          res = r
         end
         if CONFIG.timeoutCooldown and CONFIG.timeoutCooldown > 0 then
           state.cooldownUntil[key] = t + CONFIG.timeoutCooldown
         end
-        log("%s 슬롯%d: %.0f초 동안 완료되지 않아 요청을 중단했습니다%s",
+        log("%s 슬롯%d: %.0f초 동안 결과물이 나오지 않아 요청을 중단했습니다%s",
           shortAddr(p.maint), p.slot.index, elapsed,
-          canceled and " (AE CPU 작업 취소됨)"
-                   or " (해당 CPU를 못 찾아 취소 못 함 — AE 크래프팅 GUI에서 취소 가능)")
+          cpu and (canceled and (" (CPU 취소됨: " .. tostring(why) .. ")")
+                            or (" (CPU 취소 실패: " .. tostring(why) ..
+                                ", cancel()=" .. tostring(res) .. ")"))
+              or " (취소할 CPU를 찾지 못함)")
       end
     end
   end
@@ -612,6 +642,12 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
           local deficit = s.quantity - stored
           local cooling = state.cooldownUntil[key] and t and (state.cooldownUntil[key] > t)
           if deficit <= 0 then
+            if state.pending[key] then
+              state.pending[key] = nil
+              state.cooldownUntil[key] = nil
+              log("%s 슬롯%d: 재고가 목표치에 도달해 요청을 완료 처리(보관 %s)",
+                shortAddr(m.addr), s.index, comma(stored))
+            end
             st.lines[i] = head .. string.format("  보관 %-11s 충족", comma(stored))
           elseif jobBusy(key) then
             st.short = st.short + 1
@@ -646,8 +682,12 @@ local function processMaintainer(ctx, m, items, fluids, cpus, st)
               else
                 local ok, stt = callValue(craftable, "request", amount)
                 if ok then
+                  -- 요청 직후 그 작업을 담당하는 CPU 참조를 확보해 둔다(타임아웃 취소용)
+                  local cpuRef = nil
+                  local okc, fresh = pcall(ctx.mc.getCpus)
+                  if okc then cpuRef = findCraftingCpu(fresh, s, true) end
                   state.pending[key] = { status = stt, amount = amount, slot = s,
-                                         maint = m.addr, startedAt = nowSeconds() }
+                                         maint = m.addr, startedAt = nowSeconds(), cpu = cpuRef }
                   state.cooldownUntil[key] = nil
                   st.requested = st.requested + 1
                   st.pendingN = st.pendingN + 1

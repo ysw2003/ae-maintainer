@@ -232,11 +232,12 @@ dryRun=false
 | `dryRun` | `false` | `true` = 요청 없이 계산 결과만 표시 |
 | `labelFallback` | `true` | 이름 매칭 실패 시 표시이름으로 재검색 |
 | `autoRestore` | `true` | 종료(Ctrl+C) 시 유지기 슬롯 enable 상태를 원래대로 복구 |
-| `skipIfCrafting` | `true` | AE CPU 가 같은 품목을 제작 중이면 새 요청 안 함 (`getCpus().finalOutput` 비교) |
+| `skipIfCrafting` | `true` | AE CPU 작업에 같은 품목이 있으면 새 요청 안 함 |
+| `cpuSkipScope` | `any` | `any`=CPU 의 최종산출물/보관/대기/제작중 어디에든 있으면 스킵(**사람이 요청한 것 포함**) / `final`=최종 결과물만 |
 | `skipIfMaintainer` | `true` | 유지기 자체가 그 슬롯을 작업 중(`isDone=false`)이면 건너뜀 |
-| `scanActiveItems` | `false` | 판단에 `activeItems`/`storedItems`/`pendingItems` 도 포함(오탐 가능) |
-| `requestTimeout` | `60` | 요청 후 이 초 안에 완료되지 않으면 중단 + CPU 취소 시도. `0`=끔 |
+| `requestTimeout` | `60` | 요청 후 이 초 안에 **결과물이 안 나오면** 중단(+CPU 취소 시도). `0`=끔 |
 | `cancelOnTimeout` | `true` | 타임아웃 시 그 품목을 제작 중인 CPU 의 작업을 취소 |
+| `cancelFallback` | `single` | 취소 대상을 못 찾았을 때 `single`=사용 중 CPU 1대면 취소 / `none`=취소 안 함 |
 | `timeoutCooldown` | `0` | 중단 후 그 슬롯 재요청까지 대기(초). `0`=즉시 재시도 |
 | `countdown` | `true` | 화면에 다음 주기까지 남은 시간을 1초마다 표시 |
 | `view` | `detail` | 기본 화면 종류: `detail`(유지기별 슬롯 5줄) / `summary`(한 줄 요약) |
@@ -258,13 +259,16 @@ dryRun=false
    1. 내가 넣은 요청이 아직 진행 중(`isComputing`) → 건너뜀
    2. 타임아웃 중단 후 대기(`timeoutCooldown`) → 건너뜀
    3. 유지기 자체가 그 슬롯 작업 중(`isDone=false`) → 건너뜀
-   4. **AE CPU 가 같은 품목을 제작 중**(`getCpus()` → `isBusy` + `finalOutput` 일치) → 건너뜀
+   4. **AE CPU 작업에 그 품목이 포함**(`cpuSkipScope=any`: `finalOutput` + `storedItems`/`pendingItems`/`activeItems`) → 건너뜀 (사람이 요청한 작업이어도 동일)
 6. 위에 해당 없으면 `batchMode` 규칙으로 요청량 계산 → 레시피(`getCraftables`) 검색 → `request(요청량)` (요청 시각 기록)
 
-### 매 초 동작 (대기 중)
+### 매 초 동작 (대기 중) — v2.2
 
 - 화면을 다시 그려 **다음 요청까지 남은 시간**과 진행 중 요청의 `경과/타임아웃초` 를 실시간 표시
-- 진행 중 요청이 `requestTimeout` 을 넘기면: 로그에 남기고 추적 해제 + (가능하면) 그 품목을 제작 중인 **CPU 작업 취소**(`cpu.cancel()`)
+- 진행 중 요청이 `requestTimeout` 을 넘기면:
+  1. **결과물이 나왔는지 확인** — 작업 완료(`isDone`)이거나 재고가 유지수량에 도달했으면 완료로 처리
+  2. 아니면 요청 추적 해제 + **CPU 취소**: ① 요청 직후 기억해 둔 CPU → ② `getCpus()` 재조회로 그 품목이 포함된 CPU → ③ `cancelFallback=single` 이면 사용 중 CPU 가 1대뿐일 때 그 CPU
+  3. 로그에 취소 결과를 남김 (예: `(CPU 취소됨: 요청 시 기록된 CPU)` / `(취소할 CPU를 찾지 못함)`)
 
 ---
 
@@ -285,6 +289,9 @@ dryRun=false
 | **v1.4 값 메서드 호출 수정** | 값(userdata) 대신 **프록시 테이블**(메서드는 `__call` 테이블)로 흉내 내도록 하네스를 실제와 일치시킴 → 이전 코드가 즉시 실패해 버그를 재현, 수정 후 `request(512)`/`isBusy()`/`cancel()`/`getStack()` 모두 정상 |
 | **v1.4 `diag`** | `type=`table`, .request=table, .getStack=table` 등 실제 타입을 출력해 원인 파악 가능 |
 | **setup v1.2 (close 제거)** | 인터넷 핸들의 `close()` 를 **호출 불가**로 흉내 낸 하네스에서도 설치 성공(원격 해시 로컬과 일치). OpenOS `wget` 과 동일하게 이터레이터만 사용 |
+| **v2.2 CPU 포함 스킵** | `CPU_ITEM_IN_LIST=1`(최종산출물에는 없고 `storedItems` 에만 있는 상황) → `list` 에서 `AE 제작 중(중복 요청 안 함)`, drive 에서 요청 1건(물)만 발생 |
+| **v2.2 타임아웃=결과물 기준** | `requestTimeout=3` 하네스: `aaa…0001 슬롯1: 3초 동안 결과물이 나오지 않아 요청을 중단했습니다 (CPU 취소됨: 요청 시 기록된 CPU)` / 다른 슬롯은 `(CPU 취소됨: 사용 중 CPU 1대(대상 특정 불가))` — mock `CPU cancel()` 호출 확인 |
+| **v2.2 완료 판정** | `STOCK_AFTER_REQUEST=1`(결과물이 네트워크에 들어옴) → 다음 주기에 `재고가 목표치에 도달해 요청을 완료 처리(보관 4,096)` + `충족` 표시 |
 | **v2.1 상세 페이지 전환** | 3대 + `detailPerPage=2` + `pageSeconds=1` 하네스: `상세 1~2 / 3대 | 1/2 페이지` → 1초 후 `상세 3~3 / 3대 | 2/2 페이지` → 다시 1페이지로 순환 확인. `summary` 명령은 한 줄 요약, `show 2` 는 고정 상세 |
 | **v2.0 다중 유지기** | 3대 구성 하네스로 검증: `유지기 3대 감지: #1:aaaa0001 #2:aaaa0002 #3:aaaa0003` → 3대 모두 takeover + `request(512)`, `request(16000)`, `request(256)` 발행 → 인터럽트 시 3대 전부 `setEnable(...,true)` 원상복구. `list` 로 슬롯 2/5·1/5·0/5 표시 |
 | **v2.0 show/set/diag** | `show 2` → 그 유지기 슬롯 상세 + 요청, `set 2 1 4096 512` → `maint2.setSlot(1, …)`, `diag` → 3대 목록 + `type=table / .request=table` |
@@ -326,7 +333,9 @@ dryRun=false
 | 유지기 자체가 안 움직임 | `takeover=true` 이면 의도된 동작(OC 단독 관리). OC를 종료하면 자동 복구 |
 | `레시피 없음(Not Found)` | AE2 패턴 미등록 / CPU·재료 부족 |
 | `슬롯 N: 60초 동안 완료되지 않아 요청을 중단했습니다 (해당 CPU를 못 찾아 취소 못 함…)` | 그 품목을 제작 중인 CPU 를 찾지 못한 경우입니다(AE 크래프팅 상태 GUI에서 직접 취소 가능). 재요청을 잠시 막고 싶으면 `timeoutCooldown` 값을 주세요 |
-| `AE 제작 중(중복 요청 안 함)` 이 계속 뜸 | 의도된 동작입니다. 다른 품목까지 걸러지면 `scanActiveItems=true` 를 끄거나 `skipIfCrafting=false` 로 두세요 |
+| `AE 제작 중(중복 요청 안 함)` 이 계속 뜸 | 의도된 동작입니다(`cpuSkipScope=any` — 사람이 요청한 작업도 포함). 최종 결과물만 기준으로 하려면 `cpuSkipScope=final`, 검사 자체를 끄려면 `skipIfCrafting=false` |
+| **타임아웃인데 CPU 취소가 안 됨** | v2.2에서 수정(요청 시 CPU 기록 → 재탐색 → 단일 CPU 폴백). 로그의 `(CPU 취소됨: …)` / `(취소할 CPU를 찾지 못함)` 로 결과를 확인하세요. AE CPU 가 여러 대인데 대상을 못 찾으면 `cancelFallback` 을 조정하세요 |
+| 취소했는데도 같은 품목이 계속 제작됨 | 유지기 자체가 다시 요청했거나(`takeover=false`), 다른 시스템이 요청한 경우입니다. `takeover=true` 확인 |
 | `요청 실패: request 호출 실패(table)` | **v1.3 이하 버그**(v1.4에서 수정). OC는 값의 메서드를 "호출 가능한 테이블"로 노출하는데, v1.3 이하는 함수인지 검사해 거부했습니다. v1.4로 갱신하세요 |
 | 설치 중 `attempt to call a table value (field 'close')` | **setup v1.1 이하 버그**(v1.2에서 수정). `handle.close()` 는 이 환경에서 호출 불가이며 호출할 필요도 없습니다(EOF에서 자동 종료) |
 | 원인 파악이 안 됨 | `ae_maintainer diag` 를 실행해 출력을 그대로 보내주세요 |
@@ -337,6 +346,7 @@ dryRun=false
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v2.2 | 2026-09-26 | **CPU 포함 스킵**: `cpuSkipScope=any`(기본) — CPU 의 최종산출물뿐 아니라 `storedItems`/`pendingItems`/`activeItems` 에 그 품목이 있으면(사람이 요청한 작업 포함) 요청하지 않음. **타임아웃 기준을 "결과물"로**: `requestTimeout` 초과 시 재고/작업완료를 확인해 결과물이 없으면 중단. **CPU 취소 실패 수정**: 요청 직후 그 작업의 CPU 참조를 기록 → 타임아웃 때 ①기록된 CPU ②품목 포함 CPU 재탐색 ③`cancelFallback=single`(사용 중 CPU 1대) 순으로 `cancel()` 하고 결과를 로그로 표시. 재고 도달 시 요청을 완료 처리 |
 | v2.1 | 2026-09-26 | **상세 페이지 전환**: 기본 화면을 "유지기별 상세(슬롯 5줄)"로 바꾸고 **`detailPerPage`(기본 2대)씩 `pageSeconds` 마다 자동 전환**. `summary`/`detail` 명령으로 보기 전환, `show <번호>` 는 고정 상세. 설정 키 `view`,`detailPerPage` 추가 |
 | v2.0 | 2026-09-26 | **다중 유지기 지원**: 어댑터에 붙은 모든 `level_maintainer` 자동 인식(주소 오름차순). 요약 화면(페이지 + 자동 전환 `pageSize`/`pageSeconds`, 별칭 `name.<주소>`), `show <번호>` 상세, `list` 전체 출력. `set` 이 `<번호> <슬롯> <유지> <배치>` 로 변경. **성능**: 보관량을 사이클당 1회 일괄 조회(`bulkQuery`, 실패 시 슬롯별 폴백), CPU 목록도 사이클당 1회. 요청 추적/타임아웃/원상복구를 유지기별로 처리 |
 | v1.4 | 2026-09-26 | **긴급 수정(게임 내 요청 실패)**: OC 값(userdata)의 메서드는 함수가 아니라 **호출 가능한 테이블**로 노출되는데(v1.3 이하는 `type(fn)=="function"` 검사로 거부 → `요청 실패: request 메서드 없음`), 타입을 따지지 않고 호출하도록 변경. `getStack`/`isBusy`/`cancel` 등 모든 값 메서드에 적용. **`ae_maintainer diag`** 진단 명령 추가. 하네스를 실제와 동일하게(프록시 테이블) 개선해 회귀 방지 |
